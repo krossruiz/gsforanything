@@ -266,6 +266,10 @@ function paintNode(ctx, el, ox, oy, clip) {
 			drawDirectText(ctx, el, style, ox, oy, clip);
 		}
 		drawFormValue(ctx, el, style, ox, oy);
+		// Canvas widgets in the menu (the Env tab's origin gizmo) are copied as pixels.
+		if (el instanceof HTMLCanvasElement && el.width > 0 && el.height > 0 && box.width > 0 && box.height > 0) {
+			ctx.drawImage(el, box.left - ox, box.top - oy, box.width, box.height);
+		}
 	} catch {
 		// Keep painting the rest of the menu if one node can't be sampled.
 	}

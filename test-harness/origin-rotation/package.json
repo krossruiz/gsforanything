@@ -1,0 +1,10 @@
+{
+  "name": "gs-origin-rotation-test",
+  "private": true,
+  "type": "module",
+  "description": "Headless check of the Environment tab's origin rotation gizmo (mouse, touch, VR ray), persistence, share links, Orbit, physics and export.",
+  "dependencies": {
+    "iwer": "^2.6.0",
+    "puppeteer-core": "^24.0.0"
+  }
+}
