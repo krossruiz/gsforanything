@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 SRC=../site-source
 rm -rf public && mkdir -p public
-for f in index.html main.js version.js versions.json syntaxHighlight.js htmlInCanvas.js menuSystem.js exporter.js creationContext.js p5Import.js communityMerge.js twinSticks.js cameraControls.js; do
+for f in index.html main.js version.js versions.json syntaxHighlight.js htmlInCanvas.js menuSystem.js exporter.js creationContext.js p5Import.js communityMerge.js twinSticks.js cameraControls.js chatPrompt.js; do
   cp "$SRC/$f" public/
 done
 cp -a "$SRC/threejsAddons" "$SRC/vendor_modules" public/

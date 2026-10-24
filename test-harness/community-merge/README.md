@@ -14,7 +14,8 @@ Tests for `site-source/communityMerge.js` (🔀 Merge scenes in the Community ta
   checks the outgoing payload (asset placeholders, no base64), byte-exact substitution, keep markers,
   auto-fix on tokenized code, new-scene load, originals untouched, parents and prompt in the
   creation context, credits on publish, reopen, error paths and no console errors.
-  `BASE=http://localhost:3701 node test.mjs` (`HOT=1` for the gs.state / gsImportP5Sketch variant).
+  `BASE=http://localhost:3701 node test.mjs` (`HOT=1` for the gs.state / gsImportP5Sketch variant;
+  `CUSTOM_PROMPT=1` saves a custom Scene chat prompt first and checks the merge request carries it).
 * `real-sanity.mjs` – ONE real merge call to the live site's `/api/chat` with two tiny scenes
   (claude-haiku-55). Only runs with `GS_REAL_CALL=1`; costs a real API call.
 

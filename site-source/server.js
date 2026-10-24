@@ -168,6 +168,30 @@ Do NOT make new objects follow, attach to, or move with the user or the chat win
 
 Only when the user *explicitly* asks for a head-locked HUD, a "follow me" panel, or an element that always faces them should you make it follow — and in that case add it to the \`hud\` group (\`hud.add(obj)\`), which is attached to the camera and will track the user. Its \`position\` is relative to the camera (e.g. \`obj.position.set(0, 0, -1)\` places it 1m in front). Do NOT parent to \`camera\` directly — objects added straight to \`camera\` are automatically re-anchored to the world. Everything not in \`hud\` stays world-anchored via \`scene.add(...)\`.
 
+## Photorealistic lighting and materials (default look)
+
+Unless the user asks for a flat, cartoon, toon or unlit style, light and shade scenes like a photograph. Avoid flat lighting where every surface is equally bright.
+
+Lighting:
+- The app adds a soft default ambient light (\`scene.getObjectByName('gsDefaultAmbient')\`, intensity 0.6) and a white key light (\`gsDefaultKey\`). When you light a scene yourself, turn the ambient down to about 0.1–0.2 (and the default key to 0 if you add your own) instead of piling on more even light.
+- Use one motivated key light (sun through a window, a lamp, a stage spot): a \`DirectionalLight\` or \`SpotLight\` with \`castShadow = true\`. Add a weaker fill from the other side (about a quarter to a third of the key, no shadows). Keep any \`HemisphereLight\` / \`AmbientLight\` low. Aim for contrast: pools of light and soft shadow, darker corners, a brighter subject.
+- Shadows: \`renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;\`. Set \`castShadow\` on objects and \`receiveShadow\` on floors and walls. Fit the shadow camera to the scene (\`light.shadow.camera.left/right/top/bottom\` about ±5 m, tight \`near\`/\`far\`), use \`light.shadow.mapSize.set(1024, 1024)\` (2048 at most), \`light.shadow.bias = -0.0005\` and \`light.shadow.normalBias = 0.02\`, and \`scene.add(light.target)\`.
+- Intensities are physical (three.js r155+): point and spot lights use candela with inverse-square falloff (\`decay = 2\`), so a lamp 1–3 m away needs about 5–50, and \`distance\` limits its reach. A sun-like \`DirectionalLight\` is about 1–3.
+- Reflections: give metals and glossy surfaces something to reflect (skip this if \`scene.environment\` is already set, e.g. by an HDRI from the Environment tab):
+  \`const { RoomEnvironment } = await import('three/examples/jsm/environments/RoomEnvironment.js');\`
+  \`scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture; scene.environmentIntensity = 0.4;\`
+  Keep \`environmentIntensity\` modest so it doesn't flatten the lighting.
+- Tone mapping: \`renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1; renderer.outputColorSpace = THREE.SRGBColorSpace;\`.
+- For depth, optional fog that matches the background: \`scene.fog = new THREE.Fog(color, near, far)\`.
+
+Materials:
+- Use \`MeshStandardMaterial\`, or \`MeshPhysicalMaterial\` for clearcoat (car paint, varnish), \`transmission\` + \`ior\` + \`thickness\` (glass, water, ice) and \`sheen\` (fabric, velvet). Don't use MeshBasic / Lambert / Phong for lit objects.
+- Realistic values: metals \`metalness: 1\`, roughness 0.2–0.5; plastic and paint metalness 0, roughness 0.4–0.7; wood 0.6–0.8; stone and concrete 0.8–0.95; rubber and cloth 0.9+. Vary roughness and colour a little between objects, and avoid pure white or pure black base colours.
+- With no texture files, add surface detail with a small \`CanvasTexture\` (noise, grain, tiles, scratches) as \`map\`, \`roughnessMap\` or \`bumpMap\`, with \`wrapS = wrapT = THREE.RepeatWrapping\` and a \`repeat\`.
+- Colour spaces: colour textures (\`map\`, \`emissiveMap\`) get \`texture.colorSpace = THREE.SRGBColorSpace\`. Data textures (roughness, metalness, normal, bump) stay linear.
+
+VR performance (Quest): at most one or two shadow-casting lights, shadow maps of 1024 or less, few dynamic lights, and no post-processing (EffectComposer, bloom, SSAO) in VR. It drops the frame rate badly in a headset.
+
 ## How to modify the scene
 
 When you want to modify the VR scene or inject HTML, wrap your code in a fenced code block with the language tag \`vr-exec\`:
@@ -203,6 +227,28 @@ document.getElementById('overlay-root').appendChild(panel);
 8. The user is in VR/AR on a Quest 3 headset — keep UI elements readable and appropriately sized.
 9. vr-exec blocks run inside an async function, so you can use \`await\` at the top level.
 10. By default, anchor new objects to the world with \`scene.add(...)\` and a fixed \`position\`. Do NOT parent them to \`camera\` or add per-frame code that makes them follow the user, unless the user explicitly requests a head-locked or always-facing element (see "Anchoring" above).`;
+
+// The Scene chat prompt is viewable and editable in the app (Chat → Prompt).
+// A custom prompt replaces SYSTEM_PROMPT for /api/chat; GS always appends
+// CHAT_PROMPT_REQUIRED to it so scene code keeps running however it was edited.
+// Kept short on purpose. Copied into the Worker by worker/gen-prompts.mjs.
+const MAX_CUSTOM_PROMPT_CHARS = 40000;
+const CHAT_PROMPT_REQUIRED = `## GS technical requirements (always added by GS; not editable)
+
+- Code that should change the scene must be in fenced code blocks tagged \`vr-exec\` (\`\`\`vr-exec ... \`\`\`). Other code blocks are shown, not run. Several vr-exec blocks run in order.
+- vr-exec blocks run inside an async function (top-level \`await\` works) with these globals: \`THREE\`, \`scene\`, \`camera\`, \`renderer\`, \`document\`, \`hud\` (head-locked group, only on request) and \`gs\` (\`gs.state\`, \`gs.onUpdate(fn)\`, \`gs.on(target, event, fn)\`, \`gs.onDispose(fn)\`). The page also has \`gsRequire\`, \`gsCreateCanvasSurface\`, \`gsCreateP5Surface\`, \`gsGamepad\` and \`gsControls\`.
+- y = 0 is the floor, eye level is about 1.6 m, and the user faces -z. Don't create your own camera controls.
+- A user message may start with a "[GS editor settings: ...]" note. Follow it and don't mention it.`;
+
+// Returns the system prompt for a /api/chat request: the default, or the
+// user's custom prompt plus the required technical section.
+function resolveChatPrompt(custom) {
+	if (custom == null || custom === '') return { prompt: SYSTEM_PROMPT, custom: false };
+	if (typeof custom !== 'string') return { error: 'systemPrompt must be a string' };
+	if (!custom.trim()) return { prompt: SYSTEM_PROMPT, custom: false };
+	if (custom.length > MAX_CUSTOM_PROMPT_CHARS) return { error: `Custom prompt is too long (${custom.length} characters, max ${MAX_CUSTOM_PROMPT_CHARS}). Shorten it in Chat → Prompt.` };
+	return { prompt: `${custom.trim()}\n\n${CHAT_PROMPT_REQUIRED}`, custom: true };
+}
 
 // System prompt for error-correction requests
 const FIX_CODE_PROMPT = `You are an automatic error-correction system for a WebXR VR environment built with Three.js.
@@ -404,7 +450,7 @@ app.get('/api/backends', (req, res) => {
 // (bypassing this server entirely) so there's still one source of truth for
 // them instead of a duplicated copy baked into main.js.
 app.get('/api/prompts', (req, res) => {
-	res.json({ systemPrompt: SYSTEM_PROMPT, fixCodePrompt: FIX_CODE_PROMPT, themePrompt: THEME_SYSTEM_PROMPT });
+	res.json({ systemPrompt: SYSTEM_PROMPT, fixCodePrompt: FIX_CODE_PROMPT, themePrompt: THEME_SYSTEM_PROMPT, chatPromptRequired: CHAT_PROMPT_REQUIRED, maxCustomPromptChars: MAX_CUSTOM_PROMPT_CHARS });
 });
 
 // Read-only relay for public p5.js web editor sketches. editor.p5js.org
@@ -436,13 +482,17 @@ app.get('/api/p5-editor/:user/:id', async (req, res) => {
 // Proxy endpoint for the LLM chat backends
 app.post('/api/chat', async (req, res) => {
 	try {
-		const { messages, backend } = req.body;
+		const { messages, backend, systemPrompt } = req.body;
 
 		if (!messages || !Array.isArray(messages)) {
 			return res.status(400).json({ error: 'Messages array is required' });
 		}
 
-		const data = await callLLM(SYSTEM_PROMPT, messages, 16384, backend);
+		// Optional custom Scene chat prompt from Chat → Prompt (see resolveChatPrompt).
+		const resolved = resolveChatPrompt(systemPrompt);
+		if (resolved.error) return res.status(400).json({ error: resolved.error });
+
+		const data = await callLLM(resolved.prompt, messages, 16384, backend);
 
 		if (data.error) {
 			return res.status(data.status).json({

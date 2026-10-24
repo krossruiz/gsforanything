@@ -1759,6 +1759,48 @@
 		.dchat-community-section.active,
 		.dchat-chat-section.active { display: flex; }
 
+		/* Chat → Prompt: the editable Scene chat prompt (chatPrompt.js) */
+		.dchat-subtab.has-custom::after {
+			content: ''; display: inline-block; width: 7px; height: 7px; margin-left: 6px;
+			border-radius: 50%; background: #fbbf24; vertical-align: middle;
+		}
+		#dchat-custom-prompt-pill {
+			flex-shrink: 0;
+			border: 1px solid rgba(251, 191, 36, 0.6); background: rgba(251, 191, 36, 0.14); color: #fde68a;
+			font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+		}
+		#dchat-custom-prompt-pill[hidden] { display: none; }
+		#dchat-chat-section-prompt { padding: 10px 12px 12px; gap: 8px; overflow-y: auto; }
+		#dchat-prompt-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
+		#dchat-prompt-badge {
+			font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+			background: rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.85);
+		}
+		#dchat-prompt-badge.is-custom { background: rgba(251, 191, 36, 0.18); color: #fde68a; border: 1px solid rgba(251, 191, 36, 0.55); }
+		#dchat-prompt-dirty { font-size: 12px; color: #93c5fd; }
+		#dchat-prompt-dirty[hidden] { display: none; }
+		#dchat-prompt-count { margin-left: auto; font-size: 11px; color: rgba(255, 255, 255, 0.5); font-variant-numeric: tabular-nums; }
+		#dchat-prompt-count.over { color: #fca5a5; font-weight: 700; }
+		#dchat-prompt-note, .dchat-prompt-more-note { font-size: 12px; line-height: 1.4; color: rgba(255, 255, 255, 0.6); flex-shrink: 0; }
+		#dchat-prompt-editor {
+			flex: 1 1 auto; min-height: 180px; width: 100%; box-sizing: border-box; resize: none;
+			background: #14151f; color: #e5e7eb; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 8px;
+			font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 10px; tab-size: 2;
+		}
+		#dchat-prompt-editor:focus { outline: none; border-color: #8b5cf6; }
+		#dchat-prompt-actions { display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
+		#dchat-prompt-actions .dchat-btn { flex: 1 1 auto; padding: 8px 10px; font-size: 12px; }
+		#dchat-prompt-actions .dchat-btn:disabled { opacity: 0.4; cursor: default; transform: none; }
+		#dchat-prompt-msg { font-size: 12px; min-height: 1em; color: rgba(255, 255, 255, 0.7); flex-shrink: 0; }
+		#dchat-prompt-msg[data-kind="error"] { color: #fca5a5; }
+		#dchat-prompt-msg[data-kind="ok"] { color: #86efac; }
+		#dchat-chat-section-prompt details { flex-shrink: 0; font-size: 12px; color: rgba(255, 255, 255, 0.75); }
+		#dchat-chat-section-prompt summary { cursor: pointer; padding: 4px 0; }
+		#dchat-chat-section-prompt pre {
+			white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; margin: 6px 0 0;
+			background: rgba(0, 0, 0, 0.25); border-radius: 6px; padding: 8px; font: 11px/1.45 ui-monospace, Menlo, Consolas, monospace;
+		}
+
 		#dchat-themes-buttons { flex-shrink: 0; }
 		#dchat-themes-list {
 			flex: 1;
@@ -2115,6 +2157,9 @@
 		html.gs-phone .dchat-tab-full { display: inline; }
 		html.gs-phone .dchat-tab-short { display: none; }
 		html.gs-phone .dchat-subtab { min-height: 44px; }
+		html.gs-phone #dchat-prompt-editor { font-size: 16px; min-height: 140px; }
+		html.gs-phone #dchat-prompt-actions .dchat-btn { min-height: 44px; }
+		html.gs-phone #dchat-custom-prompt-pill { min-height: 44px; }
 		html.gs-phone #desktop-model-row { padding: 6px 12px; }
 		/* Chat input: attach / files / mic / history go behind a "More" (+)
 		   button, so the compose row is just [+] [message] [Send]. */
@@ -2200,6 +2245,12 @@
 		html.gs-kb-chat .dchat-theme-remember,
 		html.gs-kb-chat #dchat-theme-chat .dchat-section-label,
 		html.gs-kb-chat #desktop-chat .dchat-resize { display: none !important; }
+		html.gs-kb-chat #dchat-prompt-note,
+		html.gs-kb-chat #dchat-prompt-msg:empty,
+		html.gs-kb-chat #dchat-chat-section-prompt details { display: none !important; }
+		html.gs-kb-chat #dchat-chat-section-prompt { padding: 6px 8px; gap: 6px; overflow: hidden; }
+		html.gs-kb-chat #dchat-prompt-editor { min-height: 0; }
+		html.gs-kb-chat #dchat-prompt-actions { flex-wrap: nowrap; }
 		html.gs-kb-chat .dchat-panel { border-radius: 12px; }
 		html.gs-kb-chat #desktop-chat-messages { padding: 8px 12px; }
 		html.gs-kb-chat #desktop-chat-input-row { padding: 6px 8px; }
@@ -2336,12 +2387,14 @@
 			<div id="dchat-chat-subtabs">
 				<button type="button" class="dchat-subtab active" data-chat-section="scene">Scene</button>
 				<button type="button" class="dchat-subtab" data-chat-section="theme">Theme</button>
+				<button type="button" class="dchat-subtab" data-chat-section="prompt" title="View and edit the Scene chat prompt">Prompt</button>
 			</div>
 
 			<div id="dchat-chat-section-scene" class="dchat-chat-section active">
 				<div id="desktop-model-row">
 					<label for="desktop-model-select">Model:</label>
 					<select id="desktop-model-select"></select>
+					<button type="button" id="dchat-custom-prompt-pill" hidden title="A custom Scene chat prompt is active. Click to view or reset it.">✎ Custom prompt</button>
 				</div>
 				<div id="desktop-ollama-model-row" style="display:none;">
 					<label for="desktop-ollama-model-select">Local model:</label>
@@ -2361,6 +2414,35 @@
 						<button id="desktop-send-button">Send</button>
 					</div>
 				</div>
+			</div>
+
+			<div id="dchat-chat-section-prompt" class="dchat-chat-section">
+				<div id="dchat-prompt-head">
+					<span id="dchat-prompt-badge">Default prompt</span>
+					<span id="dchat-prompt-dirty" hidden>Unsaved changes</span>
+					<span id="dchat-prompt-count">0 / 40,000</span>
+				</div>
+				<div id="dchat-prompt-note">The instructions the AI gets with every Scene chat message (and community scene merges). Edit and Save to use your own. It's kept in this browser only.</div>
+				<textarea id="dchat-prompt-editor" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Scene chat prompt"></textarea>
+				<div id="dchat-prompt-actions">
+					<button type="button" id="dchat-prompt-save" class="dchat-btn accent" disabled>Save</button>
+					<button type="button" id="dchat-prompt-revert" class="dchat-btn" disabled>Discard changes</button>
+					<button type="button" id="dchat-prompt-reset" class="dchat-btn" disabled>Reset to default</button>
+				</div>
+				<div id="dchat-prompt-msg" role="status" aria-live="polite"></div>
+				<details id="dchat-prompt-more">
+					<summary>Always added to a custom prompt (not editable)</summary>
+					<div class="dchat-prompt-more-note">GS adds this short technical section to a custom prompt so scene code keeps running however the prompt is edited. Updates to the default prompt don't reach a custom one; use Reset to default to get them.</div>
+					<pre id="dchat-prompt-required"></pre>
+				</details>
+				<details class="dchat-prompt-ro">
+					<summary>Auto-fix prompt (read-only)</summary>
+					<pre id="dchat-prompt-fix"></pre>
+				</details>
+				<details class="dchat-prompt-ro">
+					<summary>Theme chat prompt (read-only)</summary>
+					<pre id="dchat-prompt-theme"></pre>
+				</details>
 			</div>
 
 			<div id="dchat-chat-section-theme" class="dchat-chat-section">

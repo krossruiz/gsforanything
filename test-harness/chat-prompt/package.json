@@ -1,0 +1,9 @@
+{
+  "name": "gs-chat-prompt-test",
+  "private": true,
+  "type": "module",
+  "description": "Chat \u2192 Prompt: view, edit, persist, reset the Scene chat prompt (desktop, phone + keyboard, headset panel), and the server / Worker use of a custom prompt with the LLM call mocked.",
+  "dependencies": {
+    "puppeteer-core": "^24.0.0"
+  }
+}

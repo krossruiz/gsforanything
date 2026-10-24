@@ -1,4 +1,4 @@
-import { FIX_CODE_PROMPT, SYSTEM_PROMPT, THEME_SYSTEM_PROMPT } from "./prompts.js";
+import { CHAT_PROMPT_REQUIRED, FIX_CODE_PROMPT, MAX_CUSTOM_PROMPT_CHARS, SYSTEM_PROMPT, THEME_SYSTEM_PROMPT } from "./prompts.js";
 
 // Hosted Worker for Carl Junior. Local-only HTTPS / self-signed certs / port
 // binding from site-source/server.js are intentionally not included: Workers
@@ -11,6 +11,17 @@ const OPENAI_MODEL_DEFAULT = "gpt-6-astra";
 const OPENAI_SOL_MODEL = "gpt-6.1-sol";
 const FABLE_THINKING_BUDGET = 4096;
 const SCENE_ID_RE = /^[A-Za-z0-9_-]{8,40}$/;
+
+// Same as resolveChatPrompt in site-source/server.js: the default Scene chat
+// prompt, or the user's custom prompt (Chat → Prompt) plus the required
+// technical section, capped at MAX_CUSTOM_PROMPT_CHARS.
+function resolveChatPrompt(custom) {
+  if (custom == null || custom === "") return { prompt: SYSTEM_PROMPT, custom: false };
+  if (typeof custom !== "string") return { error: "systemPrompt must be a string" };
+  if (!custom.trim()) return { prompt: SYSTEM_PROMPT, custom: false };
+  if (custom.length > MAX_CUSTOM_PROMPT_CHARS) return { error: `Custom prompt is too long (${custom.length} characters, max ${MAX_CUSTOM_PROMPT_CHARS}). Shorten it in Chat → Prompt.` };
+  return { prompt: `${custom.trim()}\n\n${CHAT_PROMPT_REQUIRED}`, custom: true };
+}
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -262,6 +273,8 @@ async function handleApi(request, env) {
       systemPrompt: SYSTEM_PROMPT,
       fixCodePrompt: FIX_CODE_PROMPT,
       themePrompt: THEME_SYSTEM_PROMPT,
+      chatPromptRequired: CHAT_PROMPT_REQUIRED,
+      maxCustomPromptChars: MAX_CUSTOM_PROMPT_CHARS,
     });
   }
 
@@ -298,7 +311,13 @@ async function handleApi(request, env) {
       let data;
       if (path === "/api/chat" || path === "/api/theme-chat") {
         if (!body.messages || !Array.isArray(body.messages)) return json({ error: "Messages array is required" }, 400);
-        const prompt = path === "/api/chat" ? SYSTEM_PROMPT : THEME_SYSTEM_PROMPT;
+        let prompt = THEME_SYSTEM_PROMPT;
+        if (path === "/api/chat") {
+          // Optional custom Scene chat prompt from Chat → Prompt.
+          const resolved = resolveChatPrompt(body.systemPrompt);
+          if (resolved.error) return json({ error: resolved.error }, 400);
+          prompt = resolved.prompt;
+        }
         const maxTokens = path === "/api/chat" ? 16384 : 4096;
         data = await callLLM(env, prompt, body.messages, maxTokens, body.backend);
       } else {

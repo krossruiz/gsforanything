@@ -38,6 +38,7 @@ Three moving parts:
 | `site-source/server.js` | Express server: static hosting + `/api/chat`, `/api/fix-code`, `/api/save-scene`, `/api/load-scene`. Holds the system prompts. |
 | `site-source/index.html` | DOM shell + styles: chat overlay (input/MIC/Send), status pill, `#ui-toggle`, export modal, and the WebXR `overlay-root`. |
 | `site-source/main.js` | The whole client app: scene setup, panels, input, speech, locomotion, and the vr-exec execution engine. |
+| `site-source/chatPrompt.js` | Chat → Prompt: the editable Scene chat prompt. Loads the default from `/api/prompts`, keeps a saved edit in `localStorage` (`gs.customChatPrompt.v1`) and adds it to `/api/chat` requests as `systemPrompt` (Scene chat and community merges; Ollama gets it directly). Shows the required technical section and the read-only fix-code / theme prompts. |
 | `site-source/exporter.js` | Share tab + 3D export: collects user content (plus the scene code's directional/point/spot lights; not GS's default rig, ambient or hemisphere), GLB and self-contained .gltf (GLTFExporter, KHR_lights_punctual), binary FBX 7.4 writer, OBJ+MTL+textures .zip, Blender .zip (.glb + `open_in_blender.py`), the export dialog and the Share tab content. Share link reuses main.js `shareCurrentScene()` → the Community share modal / upload flow. VR: Scenes panel shortcuts (Share link, Save GLB/glTF/FBX/OBJ/Blender) download directly / copy the link. |
 | `site-source/threejsAddons/ARButton.js` | Enter-session button; requests the immersive WebXR session with `local-floor` + `dom-overlay`. |
 | `site-source/node_modules/three` | Three.js (loaded via the import map in `index.html`). |
@@ -61,6 +62,16 @@ Three moving parts:
 2. `server.js` forwards it to Anthropic with the **`claude-sonnet-5`** model and a
    system prompt (`SYSTEM_PROMPT`) that teaches Claude the scene's globals and
    coordinate system. The key stays server-side.
+   If you edited the prompt in **Chat → Prompt**, the request carries it as
+   `systemPrompt` (max 40,000 characters); the server uses it instead of
+   `SYSTEM_PROMPT` and always appends `CHAT_PROMPT_REQUIRED`, a short
+   non-editable section (vr-exec blocks, globals, floor / facing, editor
+   settings note) so scene code keeps running. Reset to default deletes the
+   edit. The default prompt includes a photorealistic lighting and materials
+   section (one motivated shadow-casting key light, weak fill and ambient,
+   RoomEnvironment reflections, ACES tone mapping, physical intensities, PBR
+   material values, colour spaces, VR limits). GS's own default lights are named
+   `gsDefaultAmbient` and `gsDefaultKey` so scene code can dim them.
 3. Claude's reply is shown in the chat panel. Any fenced ` ```vr-exec ` code
    blocks are extracted (`parseVrExecBlocks`) and executed in order.
 4. **Execution** (`executeVrCode`): the code runs inside an `AsyncFunction` with

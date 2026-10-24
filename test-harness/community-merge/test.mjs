@@ -2,6 +2,8 @@ import puppeteer from 'puppeteer-core';
 import fs from 'fs';
 const BASE = process.env.BASE || 'http://localhost:3701';
 const HOT = process.env.HOT === '1'; // after rebase onto 0.973: gs.state + gsImportP5Sketch exist
+// CUSTOM_PROMPT=1: a custom Scene chat prompt (Chat → Prompt) is saved first; the merge request must carry it.
+const CUSTOM_PROMPT = process.env.CUSTOM_PROMPT === '1' ? 'Custom merge-test prompt.\nKeep everything tidy.' : null;
 const B64 = fs.readFileSync('noise.b64', 'utf8').trim();
 const b = await puppeteer.launch({ executablePath: '/usr/bin/google-chrome', headless: 'new', args: ['--no-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 const results = [];
@@ -50,6 +52,7 @@ async function newPage(vp) {
   p._errs = []; p._chat = []; p._fix = [];
   p.on('pageerror', e => p._errs.push(String(e)));
   p.on('console', m => { if (m.type() === 'error' && !/Failed to load resource|ollama|11434|merged block error|vr-exec error/i.test(m.text())) p._errs.push(m.text()); });
+  if (CUSTOM_PROMPT) await p.evaluateOnNewDocument((t) => { if (window === window.top) try { localStorage.setItem('gs.customChatPrompt.v1', t); } catch { /* sandboxed frame */ } }, CUSTOM_PROMPT);
   await p.setRequestInterception(true);
   p.on('request', req => {
     const u = req.url();
@@ -121,6 +124,7 @@ for (const vp of [{ name: 'desktop', width: 1280, height: 900 }, { name: 'phone'
   const mreq = p._chat.find(c => /\[GS scene merge request\]/.test(c.messages.at(-1).content));
   const msg = mreq?.messages.at(-1).content || '';
   ok(`${H} merge request went through the chat backend with the chosen model`, !!mreq && mreq.backend === 'claude-haiku-55', status);
+  ok(`${H} merge request carries the Scene chat prompt setting (${CUSTOM_PROMPT ? 'custom' : 'default = none sent'})`, !!mreq && (CUSTOM_PROMPT ? mreq.systemPrompt === CUSTOM_PROMPT : !('systemPrompt' in mreq)));
   ok(`${H} request has no base64 (assets tokenised)`, !msg.includes(B64.slice(0, 64)) && !msg.includes(B64.slice(-64)) && /__GS_ASSET_B1__: base64 data \(image\/png\)/.test(msg) && /__GS_ASSET_B2__: data: URL \(image\/png\)/.test(msg), `${msg.length} chars`);
   ok(`${H} request has both scenes' code, settings, history, picks, prompt`, /Scene A: "Runner"/.test(msg) && /Scene B: "Cat Garden"/.test(msg) && /a_player/.test(msg) && /b_warm/.test(msg) && /make a runner game with gamepad controls/.test(msg) && /Environment: 3D \/ three/.test(msg) && /Creation history: none saved/.test(msg) && /Gameplay logic: from A/.test(msg) && /Assets \/ models: from B/.test(msg) && !/Assets \/ models: combine/.test(msg) && /assets and art style from B/.test(msg) && /GS editor settings/.test(msg));
   ok(`${H} request explains GS conventions`, /gs\.state/.test(msg) && /gsGamepad/.test(msg) && /gsRequire\('ammo'\)/.test(msg) && /gsImportP5Sketch/.test(msg) && /@gs-keep/.test(msg));

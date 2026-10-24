@@ -12,6 +12,7 @@ import {
 } from './version.js';
 import * as GSContext from './creationContext.js';
 import * as GSMerge from './communityMerge.js';
+import * as ChatPrompt from './chatPrompt.js';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader.js';
 import { initSceneExport } from './exporter.js';
@@ -388,7 +389,8 @@ const COMMUNITY_NESTED_TABS = [
 ];
 const CHAT_SUB_TABS = [
 	{ id: 'scene', label: 'Scene', action: 'chatSection:scene' },
-	{ id: 'theme', label: 'Theme', action: 'chatSection:theme' }
+	{ id: 'theme', label: 'Theme', action: 'chatSection:theme' },
+	{ id: 'prompt', label: 'Prompt', action: 'chatSection:prompt' }
 ];
 
 // Routes both a desktop SVG click and an XR controller-ray/touch hit to the
@@ -544,6 +546,21 @@ function handleMenuAction(action) {
 			break;
 		case 'chatSection:theme':
 			setChatSection('theme');
+			break;
+		case 'chatSection:prompt':
+			setChatSection('prompt');
+			break;
+		case 'prompt:reset':
+			// Two presses (no confirm() dialog in a headset).
+			if (performance.now() < vrPromptResetArmedUntil) {
+				vrPromptResetArmedUntil = 0;
+				ChatPrompt.clearCustom();
+				updateStatus('Using the default prompt', 'connected');
+			} else {
+				vrPromptResetArmedUntil = performance.now() + 4000;
+				setTimeout(() => renderChatToCanvas(), 4100);
+			}
+			renderChatToCanvas();
 			break;
 	}
 }
@@ -812,7 +829,8 @@ let communityLayerCancel = 0;
 const communityLoadInflight = new Map();
 // Applies run one at a time so two loads can't scene.add while the other is still executing.
 let communityApplyChain = Promise.resolve();
-let chatSection = 'scene'; // Chat tab: 'scene' | 'theme'
+let chatSection = 'scene'; // Chat tab: 'scene' | 'theme' | 'prompt'
+let vrPromptResetArmedUntil = 0; // XR Chat → Prompt: first Reset press arms, second resets
 let displayOnlyMode = false; // share URL opened with editor chrome stripped
 let pendingShare = null; // share modal payload { id, name, editorUrl, viewUrl }
 let codeEditorDirty = false; // user has unsaved edits in Code tab
@@ -1313,10 +1331,14 @@ mobileXrGizmoScale?.addEventListener('click', () => setArGizmoMode('scale'));
 // ============================================================================
 // Lighting
 // ============================================================================
+// Named so AI scene code can find and dim them (see the photorealistic
+// lighting section of SYSTEM_PROMPT in server.js).
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+ambientLight.name = 'gsDefaultAmbient';
 scene.add(ambientLight);
 
 const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+directionalLight.name = 'gsDefaultKey';
 directionalLight.position.set(0, 2, 1);
 scene.add(directionalLight);
 
@@ -1372,9 +1394,28 @@ function renderChatToCanvas() {
 	const subTabY = headerHeight + 8;
 	const subTabH = 36;
 	const isTheme = chatSection === 'theme';
+	const isPrompt = chatSection === 'prompt';
 	chatThemeRememberBoxes = [];
 	let themeRememberLayout = null;
-	if (isTheme) {
+	if (isPrompt) {
+		// Chat → Prompt in a headset: read the prompt, reset it, or append a
+		// line with the keyboard (full editing is on desktop / phone).
+		const armed = performance.now() < vrPromptResetArmedUntil;
+		themeRememberLayout = buildButtonLayout([{
+			id: 'promptReset',
+			label: armed ? 'Press again to reset' : (ChatPrompt.isCustom() ? 'Reset to default' : 'Default prompt (not edited)'),
+			action: ChatPrompt.isCustom() ? 'prompt:reset' : 'noop',
+			variant: armed ? 'active' : 'inactiveToggle'
+		}], {
+			width: width - 48,
+			x: 24,
+			y: subTabY + subTabH + 10,
+			height: 36,
+			perRow: 1,
+			gap: 8
+		});
+		chatThemeRememberBoxes = themeRememberLayout.boxes;
+	} else if (isTheme) {
 		themeRememberLayout = buildButtonLayout([{
 			id: 'rememberTheme',
 			label: rememberTheme ? '\u2611 Remember theme' : '\u2610 Remember theme',
@@ -1390,7 +1431,7 @@ function renderChatToCanvas() {
 		});
 		chatThemeRememberBoxes = themeRememberLayout.boxes;
 	}
-	const contentTop = isTheme
+	const contentTop = (isTheme || isPrompt)
 		? (subTabY + subTabH + 10 + themeRememberLayout.totalHeight + 16)
 		: (subTabY + subTabH + 28); // first line Y (below Scene|Theme tabs)
 	const contentBottom = height - 20;
@@ -1399,7 +1440,30 @@ function renderChatToCanvas() {
 	// Build all lines for the active chat section
 	ctx.font = `${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`;
 	const allLines = []; // { text, color, font, heightScale }
-	if (isTheme) {
+	if (isPrompt) {
+		allLines.push({
+			text: ChatPrompt.isCustom() ? 'Custom prompt active' : 'Default Scene chat prompt',
+			color: ChatPrompt.isCustom() ? '#fbbf24' : 'rgba(255,255,255,0.6)',
+			font: `bold ${MESSAGE_FONT_SIZE - 6}px -apple-system, BlinkMacSystemFont, sans-serif`,
+			heightScale: 0.8
+		});
+		allLines.push({
+			text: 'Type and Send to add a line to the prompt. Edit fully on desktop or phone.',
+			color: 'rgba(255,255,255,0.35)',
+			font: `${MESSAGE_FONT_SIZE - 8}px -apple-system, BlinkMacSystemFont, sans-serif`,
+			heightScale: 0.7
+		});
+		allLines.push({ text: '', color: '', font: '', heightScale: 0.4 });
+		const promptText = ChatPrompt.currentText() || 'Loading…';
+		const small = `${MESSAGE_FONT_SIZE - 6}px ui-monospace, Menlo, monospace`;
+		ctx.font = small;
+		for (const part of promptText.split('\n')) {
+			for (const line of (part ? wrapText(ctx, part, maxWidth) : [''])) {
+				allLines.push({ text: line, color: '#d1d5db', font: small, heightScale: 0.75 });
+			}
+		}
+		ctx.font = `${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`;
+	} else if (isTheme) {
 		allLines.push({
 			text: 'Theme restyle chat',
 			color: 'rgba(255,255,255,0.45)',
@@ -1493,7 +1557,7 @@ function renderChatToCanvas() {
 	ctx.font = 'bold 28px -apple-system, BlinkMacSystemFont, sans-serif';
 	ctx.fillStyle = '#ffffff';
 	ctx.textAlign = 'center';
-	ctx.fillText(isTheme ? 'Theme Chat' : 'Claude Chat', width / 2, 40);
+	ctx.fillText(isPrompt ? 'Scene Chat Prompt' : (isTheme ? 'Theme Chat' : 'Claude Chat'), width / 2, 40);
 
 	// Scene | Theme subtabs (match desktop Chat sections)
 	const chatSubButtons = CHAT_SUB_TABS.map(t => ({
@@ -1501,7 +1565,7 @@ function renderChatToCanvas() {
 		variant: chatSection === t.id ? 'active' : 'inactiveToggle'
 	}));
 	const chatSubLayout = buildButtonLayout(chatSubButtons, {
-		width: width - 48, x: 24, y: subTabY, height: subTabH, perRow: 2, gap: 8
+		width: width - 48, x: 24, y: subTabY, height: subTabH, perRow: CHAT_SUB_TABS.length, gap: 8
 	});
 	chatPanelSubTabBoxes = chatSubLayout.boxes;
 	drawButtonsToCanvas(ctx, chatPanelSubTabBoxes, { fontSize: 16 });
@@ -1705,6 +1769,7 @@ function renderInputToCanvas() {
 		let placeholder = 'Ask Claude something...';
 		if (scenePanelSubTab === 'code') placeholder = 'KEYS edits Code — use Apply on left panel';
 		else if (chatSection === 'theme') placeholder = 'Ask for a theme restyle...';
+		else if (chatSection === 'prompt') placeholder = 'Add a line to the prompt...';
 		ctx.fillText(placeholder, L.inputAreaX + 12, height / 2 + 8);
 	}
 
@@ -4068,7 +4133,7 @@ function setCommunitySection(section) {
 }
 
 function setChatSection(section) {
-	chatSection = section === 'theme' ? 'theme' : 'scene';
+	chatSection = section === 'theme' || section === 'prompt' ? section : 'scene';
 	document.querySelectorAll('#dchat-chat-subtabs .dchat-subtab').forEach(btn => {
 		btn.classList.toggle('active', btn.dataset.chatSection === chatSection);
 	});
@@ -4076,7 +4141,10 @@ function setChatSection(section) {
 	const themeSec = document.getElementById('dchat-chat-section-theme');
 	if (sceneSec) sceneSec.classList.toggle('active', chatSection === 'scene');
 	if (themeSec) themeSec.classList.toggle('active', chatSection === 'theme');
-	chatScrollOffset = 0;
+	const promptSec = document.getElementById('dchat-chat-section-prompt');
+	if (promptSec) promptSec.classList.toggle('active', chatSection === 'prompt');
+	// The prompt reads top-down; chats start at the newest message.
+	chatScrollOffset = chatSection === 'prompt' ? 1e6 : 0;
 	renderChatToCanvas();
 	renderInputToCanvas();
 }
@@ -5361,6 +5429,21 @@ function handleXRSend() {
 	// newline into the code buffer instead of sending chat (see dispatchKey).
 	if (scenePanelSubTab === 'code') return;
 
+	if (chatSection === 'prompt') {
+		const line = inputText.trim();
+		if (!line) return;
+		const r = ChatPrompt.saveCustom(`${ChatPrompt.currentText().trimEnd()}\n\n${line}`);
+		updateStatus(r.ok ? 'Added to the Scene chat prompt' : r.error, r.ok ? 'connected' : 'error');
+		if (r.ok) {
+			inputText = '';
+			if (chatInput) chatInput.value = '';
+			chatScrollOffset = 0; // show the new last line
+		}
+		renderInputToCanvas();
+		renderChatToCanvas();
+		return;
+	}
+
 	if (chatSection === 'theme') {
 		const message = inputText.trim();
 		if (!message && pendingThemeAttachments.length === 0) return;
@@ -6326,7 +6409,7 @@ async function sendMessage(userMessage) {
 		let data;
 		if (selectedBackend === 'ollama') {
 			data = await callOllamaDirect(
-				cachedPrompts?.systemPrompt || '',
+				ChatPrompt.effectivePrompt() || cachedPrompts?.systemPrompt || '',
 				withGsSettingsNote(messages.map(m => ({ role: m.role, content: m.content, ...(m.images ? { images: m.images } : {}) }))),
 				selectedOllamaModel
 			);
@@ -6343,7 +6426,9 @@ async function sendMessage(userMessage) {
 						role: m.role,
 						content: m.content
 					}))),
-					backend: selectedBackend
+					backend: selectedBackend,
+					// Custom Scene chat prompt from Chat → Prompt (omitted = default).
+					...ChatPrompt.requestFields()
 				})
 			});
 
@@ -6473,13 +6558,13 @@ window.GSContext = GSContext; // console / test access
 // backend path as the scene chat; the result is installed as a new scene.
 async function callSceneChatBackend(apiMessages) {
 	if (selectedBackend === 'ollama') {
-		const data = await callOllamaDirect(cachedPrompts?.systemPrompt || '', withGsSettingsNote(apiMessages), selectedOllamaModel);
+		const data = await callOllamaDirect(ChatPrompt.effectivePrompt() || cachedPrompts?.systemPrompt || '', withGsSettingsNote(apiMessages), selectedOllamaModel);
 		return data.content[0]?.text || '';
 	}
 	const response = await fetch('/api/chat', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ messages: withGsSettingsNote(apiMessages), backend: selectedBackend })
+		body: JSON.stringify({ messages: withGsSettingsNote(apiMessages), backend: selectedBackend, ...ChatPrompt.requestFields() })
 	});
 	const text = await response.text();
 	let data;
@@ -7803,6 +7888,7 @@ async function initModelSelect() {
 	try {
 		const res = await fetch('/api/prompts');
 		cachedPrompts = await res.json();
+		ChatPrompt.setDefaults(cachedPrompts);
 	} catch (err) {
 		console.error('Failed to load /api/prompts (needed for the Ollama backend):', err);
 	}
@@ -8627,6 +8713,20 @@ document.querySelectorAll('#dchat-community-subtabs .dchat-subtab').forEach(btn 
 document.querySelectorAll('#dchat-chat-subtabs .dchat-subtab').forEach(btn => {
 	btn.addEventListener('click', () => setChatSection(btn.dataset.chatSection));
 });
+// Chat → Prompt editor (chatPrompt.js). Redraw the headset panel on changes.
+window.GSChatPrompt = ChatPrompt; // console / test access
+ChatPrompt.initPromptEditor({
+	onOpenPrompt: () => setChatSection('prompt'),
+	onStatus: (t) => updateStatus(t, 'connected')
+});
+ChatPrompt.onChange(() => { if (chatSection === 'prompt') renderChatToCanvas(); });
+// Console / test access to the headset chat panel (Chat → Prompt in VR).
+window.gsChatPanel = {
+	get section() { return chatSection; },
+	get canvas() { return chatCanvas; },
+	action: (a) => handleMenuAction(a),
+	xrSend: (text) => { inputText = String(text ?? ''); handleXRSend(); }
+};
 
 syncRememberThemeCheckboxes();
 if (dchatThemeRemember) {

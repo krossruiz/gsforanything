@@ -17,7 +17,7 @@ the `server.js` API on Cloudflare:
 Files:
 
 - `index.js`: the Worker.
-- `prompts.js`: **generated**: `node gen-prompts.mjs` extracts the prompts from `../site-source/server.js`.
+- `prompts.js`: **generated**: `node gen-prompts.mjs` extracts the prompts (`SYSTEM_PROMPT`, `FIX_CODE_PROMPT`, `THEME_SYSTEM_PROMPT`, `CHAT_PROMPT_REQUIRED`) and `MAX_CUSTOM_PROMPT_CHARS` from `../site-source/server.js`. `/api/chat` honours a custom `systemPrompt` (Chat → Prompt) the same way server.js does.
 - `wrangler.jsonc`: Worker name, assets (`./public`, `run_worker_first` for `/api/*`, `/s/*`, `/e/*`), `SCENES` KV binding.
 - `sync-public.sh`: rebuilds `public/` (gitignored) from `../site-source` (client files only).
 
