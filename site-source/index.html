@@ -666,6 +666,25 @@
 			font-size: 13px;
 		}
 
+		/* Environment → Origin rotation (originGizmo.js draws the 2D gizmo). */
+		.dchat-origin-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+		#dchat-origin-gizmo {
+			width: 180px; height: 180px; flex: 0 0 auto;
+			border-radius: 50%; background: rgba(0, 0, 0, 0.28);
+			touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none;
+		}
+		#dchat-origin-gizmo:active { cursor: grabbing; }
+		.dchat-origin-fields { display: flex; flex-direction: column; gap: 6px; flex: 1 1 120px; min-width: 120px; }
+		.dchat-origin-fields label { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: rgba(255, 255, 255, 0.8); }
+		.dchat-origin-fields input[type="number"] {
+			width: 72px; padding: 6px 8px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.18);
+			background: var(--dchat-input-bg); color: var(--dchat-text); font-size: 13px; text-align: right;
+		}
+		.dchat-origin-fields .dchat-origin-snap { justify-content: flex-start; cursor: pointer; user-select: none; }
+		#dchat-origin-readout { margin-top: 8px; font-size: 12px; color: rgba(255, 255, 255, 0.7); }
+		html.gs-phone #dchat-origin-gizmo { width: 200px; height: 200px; }
+		html.gs-phone .dchat-origin-fields input[type="number"] { width: 88px; }
+
 		.dchat-section-label {
 			font-size: 11px;
 			text-transform: uppercase;
@@ -2453,6 +2472,25 @@
 						Reset returns to the start view (4 m back at eye height; Orbit circles the scene origin).
 					</div>
 					<button id="dchat-reset-camera" class="dchat-btn secondary" style="width:100%">Reset Camera View</button>
+				</div>
+				<div id="dchat-origin">
+					<div class="dchat-section-label" style="margin-bottom:6px">Origin rotation</div>
+					<div class="dchat-env-note" style="margin-bottom:8px">
+						Turns the whole scene around its origin so it lines up with the view you want.
+						Drag the ball to tilt and turn, drag the ring to roll, click an axis end to face it.
+						Hold Shift or tick Snap for 15&deg; steps.
+					</div>
+					<div class="dchat-origin-row">
+						<canvas id="dchat-origin-gizmo" data-gs-ray-drag width="180" height="180" role="img" aria-label="Origin rotation gizmo: drag to rotate the scene"></canvas>
+						<div class="dchat-origin-fields">
+							<label>Yaw&deg; <input type="number" id="dchat-origin-yaw" step="1" min="-180" max="180" value="0" inputmode="decimal" /></label>
+							<label>Pitch&deg; <input type="number" id="dchat-origin-pitch" step="1" min="-90" max="90" value="0" inputmode="decimal" /></label>
+							<label>Roll&deg; <input type="number" id="dchat-origin-roll" step="1" min="-180" max="180" value="0" inputmode="decimal" /></label>
+							<label class="dchat-origin-snap"><input type="checkbox" id="dchat-origin-snap" /> Snap 15&deg;</label>
+						</div>
+					</div>
+					<div id="dchat-origin-readout" aria-live="polite">Not rotated</div>
+					<button type="button" id="dchat-origin-reset" class="dchat-btn secondary" style="width:100%;margin-top:8px">Reset origin</button>
 				</div>
 			</div>
 		</div>
