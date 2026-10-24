@@ -42,10 +42,11 @@ export function isIdentityOriginRotation(v) {
  * @param {typeof import('three')} o.THREE
  * @param {THREE.Object3D} o.root            group whose rotation is the origin rotation
  * @param {() => THREE.Quaternion} o.getViewQuaternion  world rotation of the viewing camera
+ * @param {(out: THREE.Vector3) => THREE.Vector3|null} [o.getViewDirection]  world direction origin → viewer (null: use the camera's back axis)
  * @param {(rot, why) => void} [o.onChange]  after every change (persist, re-adopt content…)
  * @param {() => void} [o.onRedraw]          the gizmo canvas was repainted (VR mirror refresh)
  */
-export function createOriginRotation({ THREE, root, getViewQuaternion, onChange = () => {}, onRedraw = () => {} }) {
+export function createOriginRotation({ THREE, root, getViewQuaternion, getViewDirection = null, onChange = () => {}, onRedraw = () => {} }) {
 	const _e = new THREE.Euler(0, 0, 0, 'YXZ');
 	const _q = new THREE.Quaternion();
 	const _qa = new THREE.Quaternion();
@@ -59,9 +60,19 @@ export function createOriginRotation({ THREE, root, getViewQuaternion, onChange 
 
 	const toQuat = (r, out = new THREE.Quaternion()) => out.setFromEuler(_e.set(
 		THREE.MathUtils.degToRad(r.pitch), THREE.MathUtils.degToRad(r.yaw), THREE.MathUtils.degToRad(r.roll), 'YXZ'));
+	// At pitch ±90° yaw and roll turn about the same axis (gimbal lock), so many
+	// triples are the same rotation and three.js' split flips between them.
+	// Put all of that twist in yaw (roll 0) so the readout is stable.
+	const GIMBAL_EPS = 0.05; // degrees
 	const fromQuat = (q) => {
 		_e.setFromQuaternion(q, 'YXZ');
-		return normalizeOriginRotation({ yaw: THREE.MathUtils.radToDeg(_e.y), pitch: THREE.MathUtils.radToDeg(_e.x), roll: THREE.MathUtils.radToDeg(_e.z) });
+		let yaw = THREE.MathUtils.radToDeg(_e.y), pitch = THREE.MathUtils.radToDeg(_e.x), roll = THREE.MathUtils.radToDeg(_e.z);
+		if (Math.abs(Math.abs(pitch) - 90) < GIMBAL_EPS) {
+			pitch = Math.sign(pitch) * 90;
+			yaw = pitch > 0 ? yaw - roll : yaw + roll; // Ry(a)Rx(±90)Rz(c) == Ry(a∓c)Rx(±90)
+			roll = 0;
+		}
+		return normalizeOriginRotation({ yaw, pitch, roll });
 	};
 	const snapRot = (r, step = ORIGIN_SNAP_DEG) => normalizeOriginRotation({
 		yaw: Math.round(r.yaw / step) * step, pitch: Math.round(r.pitch / step) * step, roll: Math.round(r.roll / step) * step });
@@ -89,23 +100,31 @@ export function createOriginRotation({ THREE, root, getViewQuaternion, onChange 
 		return out.set(axisV[0] * sign, axisV[1] * sign, axisV[2] * sign).applyQuaternion(root.quaternion).applyQuaternion(_invView);
 	}
 
-	/** Turn the scene so the given axis end points at the viewer (snapped to the
-	 *  world axis closest to "toward the camera"), then square it up to 90°. */
+	/** Unit vector from the origin toward the viewer, in world space. Uses the
+	 *  host's getViewDirection (Orbit: camera position − origin) when given,
+	 *  else the camera's backward axis. */
+	function towardViewer(out) {
+		const d = getViewDirection && getViewDirection(out);
+		if (d && d.lengthSq() > 1e-10) return out.copy(d).normalize();
+		return out.set(0, 0, 1).applyQuaternion(viewQ()).normalize();
+	}
+	/** Turn the scene by the smallest rotation that points the given axis end
+	 *  exactly at the viewer (so clicking Y looks straight down the Y axis). */
 	function alignAxisToView(axisId, sign = 1) {
 		const ax = AXES.find((a) => a.id === axisId);
 		if (!ax) return { ...rot };
-		const back = _v2.set(0, 0, 1).applyQuaternion(viewQ()); // toward the viewer, world
-		const comps = [Math.abs(back.x), Math.abs(back.y), Math.abs(back.z)];
-		const i = comps.indexOf(Math.max(...comps));
-		const target = new THREE.Vector3(); target.setComponent(i, Math.sign(back.getComponent(i)) || 1);
+		root.updateWorldMatrix(true, false);
+		const parentQ = root.parent ? root.parent.getWorldQuaternion(new THREE.Quaternion()) : new THREE.Quaternion();
+		// target in the root's parent frame (identity unless AR placement turned it)
+		const target = towardViewer(new THREE.Vector3()).applyQuaternion(parentQ.clone().invert()).normalize();
 		const cur = _v.set(ax.v[0] * sign, ax.v[1] * sign, ax.v[2] * sign).applyQuaternion(root.quaternion).normalize();
-		_qa.setFromUnitVectors(cur, target);
-		_q.copy(_qa).multiply(root.quaternion);
-		// Square to 90° steps when that keeps the axis on target (it does unless
-		// pitch lands near ±90°, where the Euler split is ambiguous).
-		const sq = snapRot(fromQuat(_q), 90);
-		const check = _v.set(ax.v[0] * sign, ax.v[1] * sign, ax.v[2] * sign).applyQuaternion(toQuat(sq));
-		if (check.distanceTo(target) < 1e-4) return set(sq, 'align');
+		if (cur.dot(target) < -0.999999) {
+			// opposite: any perpendicular axis works; turn about the view's up
+			const up = _v2.set(0, 1, 0).applyQuaternion(viewQ());
+			if (Math.abs(up.dot(target)) > 0.9) up.set(1, 0, 0);
+			_qa.setFromAxisAngle(up.projectOnPlane(target).normalize(), Math.PI);
+		} else _qa.setFromUnitVectors(cur, target);
+		_q.copy(_qa).multiply(root.quaternion).normalize();
 		return setQuaternion(_q, 'align', false);
 	}
 
@@ -145,10 +164,15 @@ export function createOriginRotation({ THREE, root, getViewQuaternion, onChange 
 	let hover = null; // { kind: 'end', id, sign } | { kind: 'ring' } | { kind: 'ball' }
 	function hitTest(g, x, y) {
 		const ends = axisEnds(g);
+		// Nearest dot centre wins (not draw order): overlapping dots stay
+		// selectable by clicking nearer their own centre. Ties go to the front one.
+		let best = null, bestD = Infinity;
 		for (let i = ends.length - 1; i >= 0; i--) { // front first
 			const e = ends[i];
-			if (Math.hypot(x - e.x, y - e.y) <= g.endR + 3) return { kind: 'end', id: e.ax.id, sign: e.sign };
+			const d = Math.hypot(x - e.x, y - e.y);
+			if (d <= g.endR + 3 && d < bestD - 0.5) { best = e; bestD = d; }
 		}
+		if (best) return { kind: 'end', id: best.ax.id, sign: best.sign };
 		const r = Math.hypot(x - g.cx, y - g.cy);
 		if (r <= g.ringIn - 1) return { kind: 'ball' };
 		if (r <= g.ringOut + 4) return { kind: 'ring' };
@@ -183,7 +207,9 @@ export function createOriginRotation({ THREE, root, getViewQuaternion, onChange 
 		ctx.fillStyle = hover && hover.kind === 'ball' || drag && drag.kind === 'ball' ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.05)';
 		ctx.fill();
 		// axes, back to front
-		for (const e of axisEnds(g)) {
+		const isHot = (e) => hover && hover.kind === 'end' && hover.id === e.ax.id && hover.sign === e.sign;
+		const drawn = axisEnds(g); drawn.sort((a, b) => (isHot(a) ? 1 : 0) - (isHot(b) ? 1 : 0) || a.z - b.z);
+		for (const e of drawn) {
 			const front = e.sign > 0;
 			const hot = hover && hover.kind === 'end' && hover.id === e.ax.id && hover.sign === e.sign;
 			if (front) {

@@ -9,7 +9,7 @@ share-link round trip; it needs the repo root's `npm ci`):
 
     cd ../creation-context && SIM_PORT=3842 node vercel-sim.mjs &
     cd ../origin-rotation && BASE=http://localhost:3842 node test.mjs
-    ONLY=desktop|phone|physics|share|vr node test.mjs     # one section
+    ONLY=desktop|phone|align|physics|share|vr node test.mjs     # one section
     SHOT_DIR=/some/dir node test.mjs                       # screenshots (default /workspace/gs-origin-shots)
 
 What it checks:
@@ -35,6 +35,12 @@ What it checks:
   reuses the link, a rotation-only change uploads a new one; `/e/:id` in a fresh
   browser restores the rotation; a scene without the field (pre-0.98) opens
   unrotated even when the browser had a rotation saved.
+- **align**: real CDP mouse clicks on all six axis dots from 4 start
+  rotations × 5 Orbit camera positions (120 clicks); each clicked axis must end
+  up parallel to the camera→origin line within 1°. Also the tester's case
+  (Yaw 108 → click Y looks straight down at the grid), the gimbal readout at
+  pitch ±90 (twist in yaw, roll 0, stable on repeat) and two dots ~10px apart
+  (clicking near either centre picks that one, whichever is drawn on top).
 - **vr**: in the HTML-in-canvas VR menu (switched on with the ray), a
   controller-ray drag on the gizmo rotates, a trigger on Reset origin resets,
   the player rig and menus are not rotated.

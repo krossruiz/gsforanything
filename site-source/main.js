@@ -7063,6 +7063,16 @@ originRotation = createOriginRotation({
 		const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
 		return cam.getWorldQuaternion(_originViewQ);
 	},
+	// Axis-end clicks point the axis at the viewer: in the orbiting modes that is
+	// the camera-to-origin line (the camera circles the origin); in first
+	// person / fly / VR it is the camera's own backward axis (null → default).
+	getViewDirection: (out) => {
+		if (renderer.xr.isPresenting) return null;
+		const mode = window.gsControls && window.gsControls.mode;
+		if (mode !== 'orbit' && mode !== 'map' && mode !== 'trackball') return null;
+		const o = gsOriginRoot.getWorldPosition(new THREE.Vector3());
+		return camera.getWorldPosition(out).sub(o);
+	},
 	onChange: (rot, why) => {
 		if (!isIdentityOriginRotation(rot)) adoptSceneContentIntoOrigin();
 		if (why !== 'load') {

@@ -1,6 +1,6 @@
 // Origin rotation (Environment tab) headless test.
 //   BASE=http://localhost:3842 node test.mjs        (vercel-sim: needed for the share round trip)
-//   SHOT_DIR=/workspace/gs-origin-shots ONLY=desktop|phone|vr|share node test.mjs
+//   SHOT_DIR=/workspace/gs-origin-shots ONLY=desktop|phone|align|physics|share|vr node test.mjs
 import puppeteer from 'puppeteer-core';
 import fs from 'fs';
 const BASE = process.env.BASE || 'http://localhost:3842';
@@ -81,6 +81,17 @@ async function setInput(p, k, v, viaTouch) {
   await p.type(sel, String(v)); await p.keyboard.press('Enter'); await sleep(150);
 }
 
+// Angle between a content axis (after rotation, world) and the camera-to-origin line.
+function axisVsCamera(id, sign) {
+  const v = new THREE.Vector3(id === 'x' ? sign : 0, id === 'y' ? sign : 0, id === 'z' ? sign : 0).applyQuaternion(gsOrigin.root.getWorldQuaternion(new THREE.Quaternion()));
+  const c = camera.getWorldPosition(new THREE.Vector3()).sub(gsOrigin.root.getWorldPosition(new THREE.Vector3())).normalize();
+  return { deg: THREE.MathUtils.radToDeg(v.angleTo(c)), rot: gsOrigin.rotation, cam: camera.position.toArray().map((x) => +x.toFixed(3)) };
+}
+async function setOrbitCamera(p, pos) {
+  await p.evaluate((pos) => { gsControls.setMode('orbit'); const c = gsControls.controls; c.target.set(0, 0, 0); camera.position.set(...pos); c.update(); if (c.enableDamping) { for (let i = 0; i < 5; i++) c.update(); } }, pos);
+  await sleep(250);
+}
+
 // ---------------------------------------------------------------- desktop / phone
 for (const [name, vp] of [['desktop', DESKTOP], ['phone', PHONE]]) {
   if (ONLY && ONLY !== name) continue;
@@ -154,22 +165,15 @@ for (const [name, vp] of [['desktop', DESKTOP], ['phone', PHONE]]) {
   await setInput(p, 'pitch', 'abc', false);
   ok(`${H} junk input ignored`, (await rot(p)).pitch === 90 && (await p.$eval('#dchat-origin-pitch', (e) => e.value)) === '90');
 
-  // click an axis end → align it
+  // click an axis end → align it (exactly at the camera: Orbit, camera → origin)
   await p.evaluate(() => gsOrigin.set({ yaw: 20, pitch: 10, roll: 5 }));
   g = await showGizmo(p);
-  const ends = await p.evaluate(() => gsOrigin._gizmo.axisEndPoints());
-  const xEnd = ends.find((e) => e.id === 'x' && e.sign > 0);
-  if (touch) await touchTap(p, xEnd.x, xEnd.y); else { await p.mouse.click(xEnd.x, xEnd.y); await sleep(100); }
-  const al = await p.evaluate(() => {
-    const ax = new THREE.Vector3(1, 0, 0).applyQuaternion(gsOrigin.root.getWorldQuaternion(new THREE.Quaternion()));
-    const back = new THREE.Vector3(0, 0, 1).applyQuaternion(camera.getWorldQuaternion(new THREE.Quaternion()));
-    return { rot: gsOrigin.rotation, dot: ax.dot(back), cardinal: Math.max(Math.abs(ax.x), Math.abs(ax.y), Math.abs(ax.z)) };
-  });
-  ok(`${H} ${touch ? 'tapping' : 'clicking'} the X end turns +X toward the viewer, squared to 90°`, al.dot > 0.6 && al.cardinal > 0.999 && isSnapped(al.rot, 90), JSON.stringify(al));
-  const yEnd = (await p.evaluate(() => gsOrigin._gizmo.axisEndPoints())).find((e) => e.id === 'y' && e.sign < 0);
-  if (touch) await touchTap(p, yEnd.x, yEnd.y); else { await p.mouse.click(yEnd.x, yEnd.y); await sleep(100); }
-  const al2 = await p.evaluate(() => { const ax = new THREE.Vector3(0, -1, 0).applyQuaternion(gsOrigin.root.getWorldQuaternion(new THREE.Quaternion())); const back = new THREE.Vector3(0, 0, 1).applyQuaternion(camera.getWorldQuaternion(new THREE.Quaternion())); return { dot: ax.dot(back), rot: gsOrigin.rotation }; });
-  ok(`${H} hollow −Y end aligns −Y toward the viewer`, al2.dot > 0.6, JSON.stringify(al2));
+  for (const [id, sign, label] of [['x', 1, 'X'], ['y', -1, '−Y (hollow)']]) {
+    const e = (await p.evaluate(() => gsOrigin._gizmo.axisEndPoints())).find((q) => q.id === id && q.sign === sign);
+    if (touch) await touchTap(p, e.x, e.y); else { await p.mouse.click(e.x, e.y); await sleep(100); }
+    const al = await p.evaluate(axisVsCamera, id, sign);
+    ok(`${H} ${touch ? 'tapping' : 'clicking'} the ${label} end points it straight at the camera`, al.deg < 1, JSON.stringify(al));
+  }
 
   // reset
   await p.evaluate(() => gsOrigin.set({ yaw: 45, pitch: 30, roll: 0 }));
@@ -235,6 +239,100 @@ for (const [name, vp] of [['desktop', DESKTOP], ['phone', PHONE]]) {
   const n1 = await sendChat('add a tree');
   await p.evaluate(() => gsOrigin.reset());
   ok(`${H} AI settings note mentions the origin rotation only while rotated`, !/Origin rotation:/.test(n0) && /Origin rotation: the user turned the scene's frame \(yaw 30/.test(n1), n1.slice(0, 120));
+  ok(`${H} no console/page errors`, p._errs.length === 0, JSON.stringify(p._errs.slice(0, 5)));
+  await p._ctx.close();
+}
+
+// ---------------------------------------------------------------- axis-end clicks (real CDP mouse clicks)
+if (!ONLY || ONLY === 'align') {
+  const H = '[align]';
+  const p = await open(DESKTOP);
+  await p.evaluate((c) => gsSessionCode.add(c), BOX_CODE); await sleep(400);
+  const starts = [{ yaw: 0, pitch: 0, roll: 0 }, { yaw: 108, pitch: 0, roll: 0 }, { yaw: -35, pitch: 25, roll: 40 }, { yaw: 160, pitch: -60, roll: -100 }];
+  const cams = [null, [3, 4, 5], [-4, 1.5, 2], [0.5, 6, -3], [2, -1.2, -4]];
+  const defCam = await p.evaluate(() => { gsControls.setMode('orbit'); return camera.position.toArray(); });
+  let n = 0, bad = [], skipped = 0, gimbalBad = [];
+  for (const cam of cams) {
+    await setOrbitCamera(p, cam || defCam);
+    for (const st of starts) {
+      for (const id of ['x', 'y', 'z']) for (const sign of [1, -1]) {
+        await p.evaluate((st) => gsOrigin.set(st), st);
+        await showGizmo(p); await sleep(60);
+        const ends = await p.evaluate(() => gsOrigin._gizmo.axisEndPoints());
+        const e = ends.find((q) => q.id === id && q.sign === sign);
+        // a dot whose centre coincides with another's (its own opposite end when the
+        // axis already points at the camera) can't be told apart; skip it
+        if (ends.some((q) => q !== e && Math.hypot(q.x - e.x, q.y - e.y) < 1)) { skipped++; continue; }
+        await p.mouse.click(e.x, e.y); await sleep(80);
+        const al = await p.evaluate(axisVsCamera, id, sign); n++;
+        if (!(al.deg < 1)) bad.push({ cam: cam || 'default', st, axis: (sign > 0 ? '+' : '-') + id, ...al });
+        if (Math.abs(Math.abs(al.rot.pitch) - 90) < 1e-6 && al.rot.roll !== 0) gimbalBad.push(al.rot);
+      }
+    }
+  }
+  ok(`${H} ${n} real clicks on all six axis dots (4 start rotations × 5 Orbit camera positions) each point the axis at the camera within 1°`, n >= 110 && bad.length === 0, `skipped ${skipped}; ` + JSON.stringify(bad.slice(0, 4)));
+  ok(`${H} results at pitch ±90° put the twist in yaw (roll 0)`, gimbalBad.length === 0, JSON.stringify(gimbalBad.slice(0, 4)));
+
+  // tester's case: Yaw 108 at the default camera, click +Y → looking straight down the grid normal
+  await setOrbitCamera(p, defCam);
+  await p.evaluate(() => gsOrigin.set({ yaw: 108, pitch: 0, roll: 0 })); await showGizmo(p);
+  let ye = (await p.evaluate(() => gsOrigin._gizmo.axisEndPoints())).find((q) => q.id === 'y' && q.sign > 0);
+  await p.mouse.click(ye.x, ye.y); await sleep(150);
+  const down = await p.evaluate(() => {
+    const grid = scene.getObjectByName('grid'); const nrm = new THREE.Vector3(0, 1, 0).applyQuaternion(grid.getWorldQuaternion(new THREE.Quaternion()));
+    const look = camera.getWorldDirection(new THREE.Vector3());
+    return { deg: THREE.MathUtils.radToDeg(nrm.angleTo(look.negate())), rot: gsOrigin.rotation };
+  });
+  ok(`${H} Yaw 108 → click Y: the view looks straight down at the grid (normal ∥ view, <1°)`, down.deg < 1, JSON.stringify(down));
+  const yc = (await p.evaluate(() => gsOrigin._gizmo.axisEndPoints())).find((q) => q.id === 'y' && q.sign > 0);
+  const g0 = await showGizmo(p);
+  ok(`${H} after aligning, the Y dot sits at the gizmo centre`, Math.hypot(yc.x - g0.cx, yc.y - g0.cy) < 1.5, JSON.stringify([yc, g0]));
+  // gimbal readout: camera straight overhead, so aligning −Z (Euler pitch +90 sends −Z to +Y) lands on
+  // pitch 90 (the start has roll, so a raw Euler split would keep some and flip between triples)
+  await setOrbitCamera(p, [0, 4, 0.0001]);
+  await p.evaluate(() => gsOrigin.set({ yaw: 108, pitch: 20, roll: 35 })); await showGizmo(p);
+  ye = (await p.evaluate(() => gsOrigin._gizmo.axisEndPoints())).find((q) => q.id === 'z' && q.sign < 0);
+  await p.mouse.click(ye.x, ye.y); await sleep(150);
+  const r1 = await state(p);
+  await p.mouse.move(g0.cx + 30, g0.cy + 30); await sleep(100); await p.mouse.move(g0.cx - 25, g0.cy + 10); await sleep(100);
+  await p.evaluate(() => gsOrigin._gizmo.draw());
+  ye = (await p.evaluate(() => gsOrigin._gizmo.axisEndPoints())).find((q) => q.id === 'z' && q.sign < 0);
+  await p.mouse.click(ye.x, ye.y); await sleep(150);
+  const r2 = await state(p);
+  const zc = await p.evaluate(axisVsCamera, 'z', -1);
+  ok(`${H} overhead camera: clicking −Z points it at the camera`, zc.deg < 1, JSON.stringify(zc));
+  ok(`${H} pitch ±90 readout is normalised (roll 0) and stable on repeat`, Math.abs(r1.rot.pitch) === 90 && r1.rot.roll === 0 && r1.readout === r2.readout && r1.inputs.join() === r2.inputs.join(), JSON.stringify([r1.readout, r1.inputs, r2.readout, r2.inputs]));
+  const gl = await p.evaluate(() => { const out = []; for (const [y, r] of [[30, 40], [-120, 75], [10, -170]]) for (const pt of [90, -90]) { const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(THREE.MathUtils.degToRad(pt), THREE.MathUtils.degToRad(y), THREE.MathUtils.degToRad(r), 'YXZ')); gsOrigin.set({ yaw: y, pitch: pt, roll: r }); const before = gsOrigin.root.quaternion.clone(); gsOrigin._gizmo.alignAxis('none'); out.push({ y, pt, r, same: Math.abs(before.dot(q)) > 0.99999 }); } return out; });
+  ok(`${H} (sanity) typed gimbal triples keep their rotation`, gl.every((x) => x.same), JSON.stringify(gl));
+
+  // overlapping dots: find a view where two dots are ~8–14 px apart, then click each centre
+  await setOrbitCamera(p, defCam);
+  const ov = await p.evaluate(async () => {
+    for (let yaw = -180; yaw < 180; yaw += 3) for (let pitch = -84; pitch <= 84; pitch += 3) {
+      gsOrigin.set({ yaw, pitch, roll: 0 });
+      const e = gsOrigin._gizmo.axisEndPoints().filter((q) => q.sign > 0);
+      for (let i = 0; i < e.length; i++) for (let j = i + 1; j < e.length; j++) {
+        const d = Math.hypot(e[i].x - e[j].x, e[i].y - e[j].y);
+        if (d > 9 && d < 13) return { yaw, pitch, d, a: e[i].id, b: e[j].id };
+      }
+    }
+    return null;
+  });
+  if (!ov) ok(`${H} found an overlapping-dots view`, false);
+  else {
+    for (const pick of [ov.a, ov.b]) {
+      await p.evaluate((r) => gsOrigin.set({ yaw: r.yaw, pitch: r.pitch, roll: 0 }), ov); await showGizmo(p);
+      const es = await p.evaluate(() => gsOrigin._gizmo.axisEndPoints());
+      const t = es.find((q) => q.id === pick && q.sign > 0);
+      const other = es.find((q) => q.id === (pick === ov.a ? ov.b : ov.a) && q.sign > 0);
+      const onTop = t.z > other.z ? 'on top' : 'underneath';
+      // click 2px off the centre on the side facing the other dot (inside both circles)
+      const ux = (other.x - t.x) / ov.d, uy = (other.y - t.y) / ov.d;
+      await p.mouse.click(t.x + ux * 2, t.y + uy * 2); await sleep(120);
+      const al = await p.evaluate(axisVsCamera, pick, 1);
+      ok(`${H} overlapping dots (${ov.a.toUpperCase()}/${ov.b.toUpperCase()} ${ov.d.toFixed(1)}px apart): clicking near the ${pick.toUpperCase()} centre (${onTop}) picks ${pick.toUpperCase()}`, al.deg < 1, JSON.stringify({ ov, al }));
+    }
+  }
   ok(`${H} no console/page errors`, p._errs.length === 0, JSON.stringify(p._errs.slice(0, 5)));
   await p._ctx.close();
 }
