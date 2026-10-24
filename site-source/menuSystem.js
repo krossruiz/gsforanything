@@ -1,26 +1,28 @@
 /**
- * Shared declarative menu-button system used by BOTH the desktop DOM menu
- * and the XR canvas panels, so a button only has to be defined once.
+ * Shared declarative menu buttons.
  *
- * The pattern: each panel's buttons are described as plain data (see the
- * *_BUTTONS specs in main.js). buildButtonLayout() lays them out (wrapping
- * rows, like CSS flex-wrap) into pixel boxes in one shared coordinate
- * space. Desktop renders those boxes as a real, interactive <svg>
- * (buttonsToSVG) with normal DOM click handling; XR draws the exact same
- * boxes directly onto its canvas texture (drawButtonsToCanvas) and uses
- * them for controller-ray/touch hit-testing (hitTestButtons). Add, rename,
- * recolor, or move a button in the spec and both surfaces update together.
+ * Each panel's buttons are described as plain data (see the *_BUTTONS specs
+ * in main.js). buildButtonLayout() lays them out (wrapping rows, like CSS
+ * flex-wrap) and buttonsToSVG() renders them as a real, interactive <svg>
+ * inside the menu. In VR the same menu element is painted into the headset
+ * (htmlInCanvas.js / vrWindows.js), so there is one rendering path for
+ * desktop, phone and VR.
+ *
+ * Colours meet WCAG AA on the menu panel: white labels are >= 4.5:1 on every
+ * fill (both gradient stops) and every button carries a >= 3:1 boundary
+ * stroke; the selected ('active') toggle gets a light stroke as well as a fill.
  */
 
 export const VARIANT_COLORS = {
-	default: { fill: 'rgba(255,255,255,0.1)', text: '#ffffff' },
-	secondary: { fill: 'rgba(255,255,255,0.1)', text: '#ffffff' },
-	accent: { fill1: '#6366f1', fill2: '#8b5cf6', text: '#ffffff' },
-	success: { fill1: '#10b981', fill2: '#059669', text: '#ffffff' },
-	warning: { fill1: '#f59e0b', fill2: '#d97706', text: '#ffffff' },
-	active: { fill: '#10b981', text: '#ffffff' },
-	inactiveToggle: { fill: 'rgba(255,255,255,0.1)', text: 'rgba(255,255,255,0.6)' }
+	default: { fill: 'rgba(255,255,255,0.12)', text: '#ffffff', stroke: '#70738c' },
+	secondary: { fill: 'rgba(255,255,255,0.12)', text: '#ffffff', stroke: '#70738c' },
+	accent: { fill1: '#4f46e5', fill2: '#6d28d9', text: '#ffffff', stroke: '#70738c' },
+	success: { fill1: '#047857', fill2: '#065f46', text: '#ffffff', stroke: '#70738c' },
+	warning: { fill1: '#b45309', fill2: '#92400e', text: '#ffffff', stroke: '#70738c' },
+	active: { fill: '#047857', text: '#ffffff', stroke: '#c7d2fe' },
+	inactiveToggle: { fill: 'rgba(255,255,255,0.12)', text: 'rgba(255,255,255,0.8)', stroke: '#70738c' }
 };
+const STROKE_W = 1.5;
 
 /**
  * Lays out a row of buttons that wraps like `flex-wrap: wrap`.
@@ -69,7 +71,7 @@ export function buttonsToSVG(boxes, { fontSize = 13, radius = 10 } = {}) {
 			fill = `url(#${gradId})`;
 		}
 		return `<g class="menu-btn" data-action="${escapeXml(b.action)}" data-id="${escapeXml(b.id)}" tabindex="0" role="button" style="cursor:pointer">` +
-			`<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="${radius}" fill="${fill}" />` +
+			`<rect x="${b.x + STROKE_W / 2}" y="${b.y + STROKE_W / 2}" width="${Math.max(0, b.w - STROKE_W)}" height="${Math.max(0, b.h - STROKE_W)}" rx="${radius}" fill="${fill}" stroke="${v.stroke}" stroke-width="${STROKE_W}" />` +
 			`<text x="${b.x + b.w / 2}" y="${b.y + b.h / 2}" fill="${v.text}" font-size="${fontSize}" font-weight="700" ` +
 			`font-family="-apple-system,BlinkMacSystemFont,sans-serif" text-anchor="middle" dominant-baseline="central">${escapeXml(b.label)}</text>` +
 			`</g>`;
@@ -78,51 +80,10 @@ export function buttonsToSVG(boxes, { fontSize = 13, radius = 10 } = {}) {
 	return defsMarkup + groups.join('');
 }
 
-/** Draws the same button boxes directly onto a 2D canvas context (XR panels). */
-export function drawButtonsToCanvas(ctx, boxes, { fontSize = 20, radius = 10 } = {}) {
-	for (const b of boxes) {
-		const v = VARIANT_COLORS[b.variant] || VARIANT_COLORS.default;
-		if (v.fill1) {
-			const grad = ctx.createLinearGradient(b.x, b.y, b.x + b.w, b.y + b.h);
-			grad.addColorStop(0, v.fill1);
-			grad.addColorStop(1, v.fill2);
-			ctx.fillStyle = grad;
-		} else {
-			ctx.fillStyle = v.fill;
-		}
-		roundRectPath(ctx, b.x, b.y, b.w, b.h, radius);
-		ctx.fill();
-		ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, sans-serif`;
-		ctx.fillStyle = v.text;
-		ctx.textAlign = 'center';
-		ctx.textBaseline = 'middle';
-		ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 1);
-	}
-}
-
-function roundRectPath(ctx, x, y, w, h, r) {
-	ctx.beginPath();
-	ctx.moveTo(x + r, y);
-	ctx.arcTo(x + w, y, x + w, y + h, r);
-	ctx.arcTo(x + w, y + h, x, y + h, r);
-	ctx.arcTo(x, y + h, x, y, r);
-	ctx.arcTo(x, y, x + w, y, r);
-	ctx.closePath();
-}
-
-/** Returns the box under (x, y) in the same coordinate space the boxes were laid out in, or null. */
-export function hitTestButtons(boxes, x, y) {
-	for (const b of boxes) {
-		if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return b;
-	}
-	return null;
-}
-
 /**
  * Mounts a button spec into a DOM container as a live, interactive SVG, and
  * wires a single delegated click handler that calls `onAction(action, id)`.
- * Returns the box layout in case the caller also needs it (e.g. to draw the
- * matching XR canvas version at the same coordinates).
+ * Returns the box layout.
  */
 export function mountButtonsToDOM(container, buttons, layoutOpts, onAction) {
 	const { boxes, totalHeight } = buildButtonLayout(buttons, layoutOpts);

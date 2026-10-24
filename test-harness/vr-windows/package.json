@@ -1,0 +1,10 @@
+{
+  "name": "gs-vr-windows-test",
+  "private": true,
+  "type": "module",
+  "description": "Headless check that every VR window is drawn by the HTML-in-canvas renderer, ray hits work, and UI colours meet WCAG AA (IWER-emulated Meta Quest 3).",
+  "dependencies": {
+    "iwer": "^2.6.0",
+    "puppeteer-core": "^24.0.0"
+  }
+}

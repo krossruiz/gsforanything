@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { XRButton } from './threejsAddons/XRButton.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
-import { buildButtonLayout, drawButtonsToCanvas, hitTestButtons, mountButtonsToDOM } from './menuSystem.js';
+import { mountButtonsToDOM } from './menuSystem.js';
 import { paintElementToCanvas } from './htmlInCanvas.js';
+import { createVrWindowManager, isHtmlTextField, VR_WINDOW_DISTANCE } from './vrWindows.js';
 import { mountCodeHighlight } from './syntaxHighlight.js';
 import {
 	GS_VERSION,
@@ -24,26 +25,11 @@ import './p5Import.js';
 // ============================================================================
 // Configuration
 // ============================================================================
-const CHAT_PANEL_WIDTH = 1.2;
-const CHAT_PANEL_HEIGHT = 0.8;
-const CHAT_PANEL_DISTANCE = 1.5;
-const MESSAGE_FONT_SIZE = 24;
-const SCROLL_SPEED = 3; // lines per second at full thumbstick deflection
 const THUMBSTICK_DEADZONE = 0.15;
+const STICK_SCROLL_PX_PER_S = 900; // VR window scroll at full thumbstick deflection (locomotion off)
 const MOVE_SPEED = 1.5;  // metres/second at full left-thumbstick deflection
 const TURN_SPEED = 1.8;  // radians/second at full right-thumbstick deflection
-const INPUT_PANEL_WIDTH = 1.2;
-const INPUT_PANEL_HEIGHT = 0.15;
-const INPUT_PANEL_GAP = 0.05;
-const KEYBOARD_PANEL_WIDTH = 1.2;
-const KEYBOARD_PANEL_HEIGHT = 0.45;
-const KEYBOARD_PANEL_GAP = 0.05;
-const SIDE_PANEL_WIDTH = 0.3;
-const SIDE_PANEL_HEIGHT = 0.8;
-const SIDE_PANEL_GAP = 0.06;
-const SCENE_PANEL_WIDTH = 0.52;
-const SCENE_PANEL_HEIGHT = 0.8;
-const SCENE_PANEL_GAP = 0.06;
+const VR_KEYBOARD_GAP = 0.03; // metres between the menu window and the keyboard window
 
 // ============================================================================
 // Scene Setup
@@ -66,7 +52,7 @@ camera.position.set(0, 1.6, 0);
 // ============================================================================
 // In-world menu render priority (Three.js layer 1)
 // ============================================================================
-// The XR panels, head-locked HUD, and aim reticles must draw above every mesh
+// The VR windows, head-locked HUD, and aim reticles must draw above every mesh
 // the user or injected code adds. Those meshes stay on layer 0 (the default).
 // The menu is taken off layer 0 and placed on layer 1.
 //
@@ -255,6 +241,8 @@ const dchatEnvControls = document.getElementById('dchat-env-controls');
 const dchatColorPicker = document.getElementById('dchat-color-picker');
 const dchatColorPreview = document.getElementById('dchat-color-preview');
 const dchatBrightness = document.getElementById('dchat-brightness');
+const dchatHue = document.getElementById('dchat-hue');
+const dchatSaturation = document.getElementById('dchat-saturation');
 const dchatResetCameraBtn = document.getElementById('dchat-reset-camera');
 const dchatNavType = document.getElementById('dchat-nav-type');
 const dchatScenesButtonsMount = document.getElementById('dchat-scenes-buttons');
@@ -287,14 +275,10 @@ const dchatHdriStatus = document.getElementById('dchat-hdri-status');
 
 
 // ============================================================================
-// Shared menu button specs (menuSystem.js) — the single source of truth for
-// every button that has to exist in both the desktop DOM menu and the XR
-// canvas panels. Add/rename/recolor a button here and both surfaces update:
-// desktop mounts these as a live <svg> (mountButtonsToDOM), XR draws the
-// exact same boxes onto its canvas texture (drawButtonsToCanvas) and hit-
-// tests controller rays against them (hitTestButtons). All click/hit paths
-// funnel into handleMenuAction() below, so behavior only needs to be
-// written once too.
+// Shared menu button specs (menuSystem.js), mounted as live <svg> buttons in
+// the menu. In VR the same menu is painted into the headset (vrWindows.js),
+// so there is one definition and one rendering path. All clicks (mouse,
+// touch, controller ray) funnel into handleMenuAction() below.
 // ============================================================================
 const ENV_MODE_BUTTONS = [
 	{ id: 'vr', label: 'VR (color)', action: 'env:vr' }
@@ -302,66 +286,18 @@ const ENV_MODE_BUTTONS = [
 const EXIT_XR_BUTTON = [
 	{ id: 'exitXr', label: 'Exit VR', action: 'env:exit', variant: 'warning' }
 ];
-// Mirrors desktop Environment → Navigation (WASD / First Person). XR grip still cycles Off.
-const NAV_MODE_BUTTONS = [
-	{ id: 'navFree', label: 'WASD', action: 'env:nav:free' },
-	{ id: 'navPlanar', label: 'First Person', action: 'env:nav:planar' }
-];
-function getLayDownButton() {
-	return {
-		id: 'layDown',
-		label: layDownView ? 'Sit up' : 'Lay down',
-		action: 'env:layDown',
-		variant: layDownView ? 'active' : 'default'
-	};
-}
-function getWindowAnchorButton() {
-	const follow = windowAnchorMode === 'follow';
-	return {
-		id: 'windowAnchor',
-		label: follow ? 'Windows: Follow head' : 'Windows: Fixed',
-		action: 'env:windowAnchor',
-		variant: follow ? 'active' : 'inactiveToggle'
-	};
-}
-function getHtmlInCanvasButton() {
-	return {
-		id: 'htmlInCanvas',
-		label: htmlInCanvas ? 'HTML in canvas: ON' : 'HTML in canvas',
-		action: 'env:htmlInCanvas',
-		variant: htmlInCanvas ? 'active' : 'inactiveToggle'
-	};
-}
 const SCENES_BUTTONS = [
 	{ id: 'export', label: 'Export', action: 'scenes:export', variant: 'accent' },
 	{ id: 'importFile', label: 'Import File', action: 'scenes:importFile' },
 	{ id: 'importFolder', label: 'Import Folder', action: 'scenes:importFolder' },
 	{ id: 'loadSaved', label: 'Load Saved', action: 'scenes:loadSaved', variant: 'success' },
 	{ id: 'clearScene', label: 'Clear scene', action: 'scenes:clear', variant: 'secondary' },
-	// Share & 3D export (exporter.js). Desktop/phone: one shortcut to the Share
-	// tab. VR (no Share tab there): the Share options as panel buttons.
-	{ id: 'openShare', label: 'Share & Export 3D', action: 'scenes:openShareTab', variant: 'accent', desktopOnly: true },
-	{ id: 'shareLink', label: 'Share link', action: 'scenes:shareLink', variant: 'accent', xrOnly: true },
-	{ id: 'exportGlb', label: 'Save GLB', action: 'scenes:exportModel:glb', variant: 'accent', xrOnly: true },
-	{ id: 'exportGltf', label: 'Save glTF', action: 'scenes:exportModel:gltf', variant: 'accent', xrOnly: true },
-	{ id: 'exportFbx', label: 'Save FBX', action: 'scenes:exportModel:fbx', variant: 'accent', xrOnly: true },
-	{ id: 'exportObj', label: 'Save OBJ', action: 'scenes:exportModel:obj', variant: 'accent', xrOnly: true },
-	{ id: 'exportBlender', label: 'Save Blender', action: 'scenes:exportModel:blender', variant: 'accent', xrOnly: true }
+	// Share & 3D export (exporter.js): one shortcut to the Share tab (the same
+	// menu is shown in VR, so the Share tab is reachable there too).
+	{ id: 'openShare', label: 'Share & Export 3D', action: 'scenes:openShareTab', variant: 'accent' }
 ];
-const SCENES_BUTTONS_DOM = SCENES_BUTTONS.filter((b) => !b.xrOnly);
-const SCENES_BUTTONS_XR = SCENES_BUTTONS.filter((b) => !b.desktopOnly);
 const EXPORT_COMBINED_BUTTON = [
 	{ id: 'exportCombined', label: 'Export Combined', action: 'scenes:exportCombined', variant: 'warning' }
-];
-const FILES_BUTTONS = [
-	{ id: 'uploadFiles', label: 'Upload files', action: 'files:upload', variant: 'accent' },
-	{ id: 'clearFiles', label: 'Clear all', action: 'files:clear', variant: 'secondary' }
-];
-const CODE_BUTTONS = [
-	{ id: 'codeLive', label: 'Live updates', action: 'code:toggleLive' },
-	{ id: 'codeApply', label: 'Apply', action: 'code:apply', variant: 'accent' },
-	{ id: 'codeRevert', label: 'Revert', action: 'code:revert', variant: 'secondary' },
-	{ id: 'codeReset', label: 'Full reset', action: 'code:reset', variant: 'warning' }
 ];
 const COMMUNITY_BUTTONS = [
 	{ id: 'upload', label: 'Upload Current Scene', action: 'community:upload', variant: 'accent' },
@@ -372,24 +308,6 @@ const THEME_BUTTONS = [
 	{ id: 'refreshThemes', label: 'Refresh', action: 'themes:refresh' },
 	{ id: 'resetTheme', label: 'Reset Default', action: 'themes:reset' }
 ];
-// XR left panel top-level sections (desktop tabs minus Chat/Environment, which
-// have their own XR meshes). Community nests Scenes|Themes like desktop.
-const SCENE_PANEL_SUB_TABS = [
-	{ id: 'scenes', label: 'Scenes', action: 'panel:scenes' },
-	{ id: 'files', label: 'Files', action: 'panel:files' },
-	{ id: 'code', label: 'Code', action: 'panel:code' },
-	{ id: 'community', label: 'Community', action: 'panel:community' }
-];
-// Desktop top-level tab order for reference (Chat + Environment are separate XR meshes):
-// Chat (Scene|Theme) · Environment · Scenes · Files · Code · Community (Scenes|Themes)
-const COMMUNITY_NESTED_TABS = [
-	{ id: 'scenes', label: 'Scenes', action: 'communitySection:scenes' },
-	{ id: 'themes', label: 'Themes', action: 'communitySection:themes' }
-];
-const CHAT_SUB_TABS = [
-	{ id: 'scene', label: 'Scene', action: 'chatSection:scene' },
-	{ id: 'theme', label: 'Theme', action: 'chatSection:theme' }
-];
 
 // Routes both a desktop SVG click and an XR controller-ray/touch hit to the
 // same behavior, so the behavior itself is written exactly once.
@@ -398,17 +316,10 @@ function handleMenuAction(action) {
 		case 'env:vr':
 			isVRMode = true;
 			applyEnvironmentMode();
-			renderSidePanel();
 			renderDomEnv();
 			break;
 		case 'env:exit':
 			exitXrToDesktop();
-			break;
-		case 'env:layDown':
-			toggleLayDownView();
-			break;
-		case 'env:htmlInCanvas':
-			setHtmlInCanvas(!htmlInCanvas);
 			break;
 		case 'env:windowAnchor':
 			setWindowAnchorMode(windowAnchorMode === 'follow' ? 'fixed' : 'follow');
@@ -417,13 +328,13 @@ function handleMenuAction(action) {
 			locomotionMode = 'free';
 			if (dchatNavType) dchatNavType.value = 'free';
 			updateStatus('Locomotion: WASD/free-fly', 'connected');
-			renderSidePanel();
+			renderDomEnv();
 			break;
 		case 'env:nav:planar':
 			locomotionMode = 'planar';
 			if (dchatNavType) dchatNavType.value = 'planar';
 			updateStatus('Locomotion: First Person', 'connected');
-			renderSidePanel();
+			renderDomEnv();
 			break;
 		case 'scenes:export':
 			showExportModal(false);
@@ -469,7 +380,7 @@ function handleMenuAction(action) {
 				dchatCodeLive.checked = !dchatCodeLive.checked;
 				if (dchatCodeLive.checked && codeEditorDirty) scheduleLiveCodeApply();
 			}
-			renderScenePanel();
+			renderDomSceneList();
 			break;
 		case 'code:apply':
 			// Apply hot reloads (changed blocks only, state kept).
@@ -481,7 +392,7 @@ function handleMenuAction(action) {
 			break;
 		case 'code:revert':
 			revertCodeEditor();
-			renderScenePanel();
+			renderDomSceneList();
 			break;
 		case 'community:upload':
 			uploadCurrentSceneToCommunity();
@@ -507,37 +418,13 @@ function handleMenuAction(action) {
 		case 'theme:toggleRemember':
 			setRememberTheme(!rememberTheme);
 			break;
-		case 'panel:scenes':
-			scenePanelSubTab = 'scenes';
-			renderScenePanel();
-			renderInputToCanvas();
-			break;
-		case 'panel:files':
-			scenePanelSubTab = 'files';
-			renderScenePanel();
-			renderInputToCanvas();
-			break;
-		case 'panel:code':
-			scenePanelSubTab = 'code';
-			syncCodeEditorFromState({ force: false });
-			codeScrollOffset = 0;
-			renderScenePanel();
-			renderInputToCanvas();
-			break;
-		case 'panel:community':
-			scenePanelSubTab = 'community';
-			renderScenePanel();
-			renderInputToCanvas();
-			if (communitySection === 'themes') refreshCommunityThemes();
-			else refreshCommunityScenes();
-			break;
 		case 'communitySection:scenes':
 			setCommunitySection('scenes');
-			renderScenePanel();
+			renderDomSceneList();
 			break;
 		case 'communitySection:themes':
 			setCommunitySection('themes');
-			renderScenePanel();
+			renderDomSceneList();
 			break;
 		case 'chatSection:scene':
 			setChatSection('scene');
@@ -564,29 +451,6 @@ function exitXrToDesktop() {
 		return;
 	}
 	updateStatus('Not in an XR session', '');
-}
-
-/** Apply (or clear) the lay-down pitch on viewOffset. Only active while in
- *  WebXR / mobile XR so desktop orbit camera stays upright. */
-function applyLayDownView() {
-	if (!viewOffset) return;
-	const inXr = !!(renderer && renderer.xr && renderer.xr.isPresenting) || !!mobileXRMode;
-	viewOffset.rotation.x = (layDownView && inXr) ? -Math.PI / 2 : 0;
-}
-
-function toggleLayDownView() {
-	layDownView = !layDownView;
-	applyLayDownView();
-	renderSidePanel();
-	renderDomEnv();
-	const inXr = !!(renderer && renderer.xr && renderer.xr.isPresenting) || !!mobileXRMode;
-	if (layDownView) {
-		updateStatus(inXr
-			? 'Lay-down view on — look toward the ceiling to face the scene'
-			: 'Lay-down view armed — takes effect in AR/VR', 'connected');
-	} else {
-		updateStatus('Sit-up view restored', 'connected');
-	}
 }
 
 // ============================================================================
@@ -719,49 +583,22 @@ async function callOllamaDirect(systemPrompt, chatMessages, model, maxTokens = 1
 	if (!res.ok) throw new Error(data.error || `Ollama error: ${res.status}`);
 	return { content: [{ text: data.message?.content || '' }] };
 }
-let chatPanel = null;
-let chatTexture = null;
-let chatCanvas = null;
-let chatContext = null;
-let inputPanel = null;
-let inputTexture = null;
-let inputCanvas = null;
-let inputContext = null;
-let inputText = '';
-let keyboardPanel = null;
-let keyboardTexture = null;
-let keyboardCanvas = null;
-let keyboardContext = null;
 let keyboardShift = false;    // uppercase next character key
 let keyboardSymbols = false;  // symbol layer toggled on
-let keyboardKeyRects = [];    // hit rectangles: { x, y, w, h, value, action }
-let keyboardCollapsed = false; // keyboard hidden to free up the view
-// When on during an immersive VR session, the world-space menu shows a live
-// snapshot of the desktop #desktop-chat element instead of the canvas-drawn
-// chat / scene / input panels. The side panel stays so this toggle (and Exit
-// VR) remain reachable. See htmlInCanvas.js for why this is not CSS3D.
-let htmlInCanvas = false;
-let htmlInCanvasPanel = null;
-let htmlInCanvasCanvas = null;
-let htmlInCanvasTexture = null;
-let htmlInCanvasAspect = 0;
-let htmlKeyboardForDom = false; // XR keyboard targets a focused field inside #desktop-chat
-let sidePanelHtmlButtonBoxes = [];
-let _htmlPaintAt = 0;
-let keyboardHoverIndex = -1;  // index into keyboardKeyRects the pointer is over
+// VR windows (vrWindows.js). Every in-headset window is a live DOM element
+// painted by htmlInCanvas.js: the menu (#desktop-chat), the keyboard
+// (#gs-vr-keyboard) and the head-locked Hide/Show UI button (#gs-vr-hud).
+// Created in initVrWindows(); null until then.
+let vrWindows = null;
+let vrMainWindow = null;
+let vrKeyboardWindow = null;
+let vrHudWindow = null;
+let vrKeyboardOpen = false;   // keyboard window shown (a text field was pointed at)
+let vrKeyboardTarget = null;  // the <input>/<textarea> the VR keyboard types into
 let rayVisible = true;        // controller ray lines shown (cursor always shows)
-let hudStatusPanel = null;    // head-locked status badge (mirrors DOM #status)
-let hudStatusCanvas = null;
-let hudStatusContext = null;
-let hudStatusTexture = null;
 let uiCollapsed = false;      // all main panels hidden for an unobstructed scene
-let uiTogglePanel = null;     // head-locked Hide/Show-UI button (never collapses)
-let uiToggleCanvas = null;
-let uiToggleContext = null;
-let uiToggleTexture = null;
 let player = null;            // rig holding the camera + controllers (locomotion)
-let viewOffset = null;        // child of player: pitch remapping for lay-down AR/VR view
-let layDownView = false;      // when true (in XR), pitch viewOffset -90° for supine viewing
+let viewOffset = null;        // child of player holding camera + controllers (identity transform)
 let locomotionMode = 'free';  // 'off' (thumbsticks scroll) | 'planar' (First Person) | 'free' (WASD) - see dchat-nav-type
 let _locoPrevTime = 0;        // previous frame timestamp for dt
 
@@ -781,26 +618,16 @@ let vadData = null;            // reusable Float32Array for analyser samples
 let vadSpeaking = false;       // VAD currently hears speech
 let vadSilenceMs = 0;          // ms of trailing silence after speech
 let vadLastTime = 0;           // timestamp of last VAD tick
-let chatScrollOffset = 0; // in lines, 0 = scrolled to bottom (newest)
-let sidePanel = null;
-let sideTexture = null;
-let sideCanvas = null;
-let sideContext = null;
 let isVRMode = true;
 let vrBgHue = 220;       // 0-360
 let vrBgSat = 0.15;      // 0-1
 let vrBgLight = 0.12;    // 0-1
 let vrSkybox = null;     // inverted sphere to block passthrough in VR mode
-let scenePanel = null;
-let sceneTexture = null;
-let sceneCanvas = null;
-let sceneContext = null;
 let executedCodeBlocks = [];  // vr-exec code blocks from current chat session
 let loadedScenes = [];        // imported scene files: { id, name, thumbnail, codeBlocks, active, createdAt, _thumbImage }
-let sceneScrollOffset = 0;
 let sceneFileExtension = 'vrscene';
 let scenePanelSubTab = 'scenes'; // 'scenes' | 'files' | 'code' | 'community' - see SCENE_PANEL_SUB_TABS
-let communityScenesCache = []; // last-fetched list, so the XR panel has something to draw without re-fetching every frame
+let communityScenesCache = []; // last-fetched list
 let communityThemesCache = [];
 let communitySection = 'scenes'; // Community tab: 'scenes' | 'themes'
 // Community scene load: 'clear' blanks the world first (default); 'layer' adds.
@@ -835,21 +662,6 @@ let pendingRenameKind = 'scene'; // 'scene' | 'theme'
 let currentTheme = null; // last applied theme object { name, cssVars, customCSS }
 let themeChatMessages = []; // API context for /api/theme-chat
 let themeChatLoading = false;
-// Button hitboxes from the most recent draw of each canvas panel, reused
-// by handleSidePanelHit/handleScenePanelHit (see menuSystem.js hitTestButtons).
-let sidePanelEnvButtonBoxes = [];
-let sidePanelExitButtonBoxes = [];
-let sidePanelNavButtonBoxes = [];
-let sidePanelWheelHit = { cx: 128, cy: 290, r: 95, innerR: 20 };
-let sidePanelSliderHit = { y: 420, h: 30, pad: 24 };
-let scenePanelButtonBoxes = [];
-let scenePanelSubTabBoxes = [];
-let scenePanelNestedTabBoxes = []; // Community Scenes|Themes nested tabs
-let scenePanelListTop = 0; // set by renderScenePanel, reused by handleScenePanelHit
-let chatPanelSubTabBoxes = []; // Chat Scene|Theme subtabs on center panel
-let chatThemeRememberBoxes = []; // XR theme-chat "Remember theme" toggle
-let codeScrollOffset = 0; // line scroll for XR Code panel
-let filesScrollOffset = 0; // row scroll for XR Files panel
 let systemObjectIds = new Set();
 let systemOverlayIds = new Set();
 
@@ -875,8 +687,8 @@ camera.add(hud);
 // Moving/rotating this group is the WebXR-correct way to move the user — three.js
 // composes the rig's transform with the live headset pose. The camera must be in
 // the scene graph for the HUD's children to render, which it now is via `player`.
-// viewOffset sits between player and camera/controllers so lay-down pitch remaps
-// the view without rotating the locomotion yaw rig (player.rotateY stays world-up).
+// viewOffset sits between player and camera/controllers. It stays the identity
+// (the old lay-down pitch was removed); injected scene code may still use it.
 player = new THREE.Group();
 player.name = 'player';
 viewOffset = new THREE.Group();
@@ -1246,7 +1058,6 @@ async function enterMobileXRMode(mode) {
 	mobileXRWalkBtn.hidden = false;
 	updateStatus('Cardboard VR active', 'connected');
 	applyEnvironmentMode();
-	applyLayDownView();
 	renderDomEnv();
 }
 
@@ -1281,7 +1092,6 @@ function exitMobileXRMode() {
 	mobileXRWalkBtn.hidden = true;
 	isVRMode = true;
 	applyEnvironmentMode();
-	applyLayDownView(); // clear pitch for desktop
 	renderDomEnv();
 	updateStatus('Ready', '');
 	refreshMobileXRButtons();
@@ -1327,235 +1137,6 @@ vrSkybox = new THREE.Mesh(skyboxGeo, skyboxMat);
 vrSkybox.visible = false;
 scene.add(vrSkybox);
 
-// ============================================================================
-// Chat Panel (3D Canvas Texture)
-// ============================================================================
-function createChatPanel() {
-	// Create canvas for rendering text
-	chatCanvas = document.createElement('canvas');
-	chatCanvas.width = 1024;
-	chatCanvas.height = 768;
-	chatContext = chatCanvas.getContext('2d');
-
-	// Create texture from canvas
-	chatTexture = new THREE.CanvasTexture(chatCanvas);
-	chatTexture.minFilter = THREE.LinearFilter;
-	chatTexture.magFilter = THREE.LinearFilter;
-
-	// Create panel geometry and material
-	const geometry = new THREE.PlaneGeometry(CHAT_PANEL_WIDTH, CHAT_PANEL_HEIGHT);
-	const material = new THREE.MeshBasicMaterial({
-		map: chatTexture,
-		transparent: true,
-		side: THREE.DoubleSide
-	});
-
-	chatPanel = new THREE.Mesh(geometry, material);
-	chatPanel.position.set(0, 1.4, -CHAT_PANEL_DISTANCE);
-	scene.add(chatPanel);
-
-	// Initial render
-	renderChatToCanvas();
-}
-
-function renderChatToCanvas() {
-	renderDomChat();
-	if (!chatContext) return;
-
-	const ctx = chatContext;
-	const width = chatCanvas.width;
-	const height = chatCanvas.height;
-	const lineHeight = 36;
-	const padding = 30;
-	const maxWidth = width - padding * 2;
-	const headerHeight = 60;
-	const subTabY = headerHeight + 8;
-	const subTabH = 36;
-	const isTheme = chatSection === 'theme';
-	chatThemeRememberBoxes = [];
-	let themeRememberLayout = null;
-	if (isTheme) {
-		themeRememberLayout = buildButtonLayout([{
-			id: 'rememberTheme',
-			label: rememberTheme ? '\u2611 Remember theme' : '\u2610 Remember theme',
-			action: 'theme:toggleRemember',
-			variant: rememberTheme ? 'active' : 'inactiveToggle'
-		}], {
-			width: width - 48,
-			x: 24,
-			y: subTabY + subTabH + 10,
-			height: 36,
-			perRow: 1,
-			gap: 8
-		});
-		chatThemeRememberBoxes = themeRememberLayout.boxes;
-	}
-	const contentTop = isTheme
-		? (subTabY + subTabH + 10 + themeRememberLayout.totalHeight + 16)
-		: (subTabY + subTabH + 28); // first line Y (below Scene|Theme tabs)
-	const contentBottom = height - 20;
-	const visibleLineCount = Math.floor((contentBottom - contentTop) / lineHeight);
-
-	// Build all lines for the active chat section
-	ctx.font = `${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`;
-	const allLines = []; // { text, color, font, heightScale }
-	if (isTheme) {
-		allLines.push({
-			text: 'Theme restyle chat',
-			color: 'rgba(255,255,255,0.45)',
-			font: `bold ${MESSAGE_FONT_SIZE - 6}px -apple-system, BlinkMacSystemFont, sans-serif`,
-			heightScale: 0.8
-		});
-		allLines.push({
-			text: 'Ask for editor chrome restyles. Upload from Community → Themes.',
-			color: 'rgba(255,255,255,0.35)',
-			font: `${MESSAGE_FONT_SIZE - 8}px -apple-system, BlinkMacSystemFont, sans-serif`,
-			heightScale: 0.7
-		});
-		allLines.push({ text: '', color: '', font: '', heightScale: 0.4 });
-		for (const msg of themeChatMessages) {
-			const isUser = msg.role === 'user';
-			allLines.push({
-				text: isUser ? 'You' : 'Theme AI',
-				color: isUser ? '#6366f1' : '#f59e0b',
-				font: `bold ${MESSAGE_FONT_SIZE - 4}px -apple-system, BlinkMacSystemFont, sans-serif`,
-				heightScale: 0.7
-			});
-			const wrapped = wrapText(ctx, String(msg.content || ''), maxWidth);
-			for (const line of wrapped) {
-				allLines.push({
-					text: line,
-					color: '#e0e0e0',
-					font: `${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`,
-					heightScale: 1.0
-				});
-			}
-			allLines.push({ text: '', color: '', font: '', heightScale: 0.5 });
-		}
-		if (themeChatLoading) {
-			allLines.push({
-				text: thinkingStatusText(),
-				color: '#8b5cf6',
-				font: `italic ${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`,
-				heightScale: 1.0
-			});
-		}
-	} else {
-		for (const msg of displayMessages) {
-			const isUser = msg.role === 'user';
-			// Restored creation history is labelled and tinted amber (also in a headset).
-			allLines.push({
-				text: msg.historyMarker ? 'Creation history' : (isUser ? 'You' : 'Claude') + (msg.history ? ' (history)' : ''),
-				color: msg.history ? '#f59e0b' : (isUser ? '#6366f1' : '#10b981'),
-				font: `bold ${MESSAGE_FONT_SIZE - 4}px -apple-system, BlinkMacSystemFont, sans-serif`,
-				heightScale: 0.7
-			});
-			const wrapped = msg.history
-				? String(msg.content || '').split('\n').flatMap(part => wrapText(ctx, part, maxWidth))
-				: wrapText(ctx, msg.content, maxWidth);
-			for (const line of wrapped) {
-				allLines.push({
-					text: line,
-					color: msg.history ? '#c9c9c9' : '#e0e0e0',
-					font: `${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`,
-					heightScale: 1.0
-				});
-			}
-			allLines.push({ text: '', color: '', font: '', heightScale: 0.5 });
-		}
-		if (isLoading) {
-			allLines.push({
-				text: thinkingStatusText(),
-				color: '#8b5cf6',
-				font: `italic ${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`,
-				heightScale: 1.0
-			});
-		}
-	}
-
-	// Clamp scroll offset: 0 = bottom (newest visible), max = scrolled to top
-	const totalLines = allLines.length;
-	const maxScroll = Math.max(0, totalLines - visibleLineCount);
-	chatScrollOffset = Math.max(0, Math.min(chatScrollOffset, maxScroll));
-
-	const bottomIndex = totalLines - chatScrollOffset;
-	const topIndex = Math.max(0, bottomIndex - visibleLineCount);
-
-	ctx.clearRect(0, 0, width, height);
-	ctx.fillStyle = 'rgba(20, 20, 30, 0.92)';
-	roundRect(ctx, 0, 0, width, height, 24);
-	ctx.fill();
-
-	ctx.fillStyle = 'rgba(99, 102, 241, 0.3)';
-	roundRect(ctx, 0, 0, width, headerHeight, 24, true);
-	ctx.fill();
-
-	ctx.font = 'bold 28px -apple-system, BlinkMacSystemFont, sans-serif';
-	ctx.fillStyle = '#ffffff';
-	ctx.textAlign = 'center';
-	ctx.fillText(isTheme ? 'Theme Chat' : 'Claude Chat', width / 2, 40);
-
-	// Scene | Theme subtabs (match desktop Chat sections)
-	const chatSubButtons = CHAT_SUB_TABS.map(t => ({
-		...t,
-		variant: chatSection === t.id ? 'active' : 'inactiveToggle'
-	}));
-	const chatSubLayout = buildButtonLayout(chatSubButtons, {
-		width: width - 48, x: 24, y: subTabY, height: subTabH, perRow: 2, gap: 8
-	});
-	chatPanelSubTabBoxes = chatSubLayout.boxes;
-	drawButtonsToCanvas(ctx, chatPanelSubTabBoxes, { fontSize: 16 });
-	if (themeRememberLayout) drawButtonsToCanvas(ctx, chatThemeRememberBoxes, { fontSize: 16 });
-
-	if (chatScrollOffset < maxScroll) {
-		ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-		ctx.font = '18px sans-serif';
-		ctx.textAlign = 'center';
-		ctx.fillText('\u25B2 scroll up', width / 2, contentTop - 10);
-	}
-
-	ctx.textAlign = 'left';
-	let y = contentTop;
-	for (let i = topIndex; i < bottomIndex && i < totalLines; i++) {
-		const line = allLines[i];
-		if (!line.text) {
-			y += lineHeight * line.heightScale;
-			continue;
-		}
-		if (y > contentBottom) break;
-		ctx.font = line.font;
-		ctx.fillStyle = line.color;
-		ctx.fillText(line.text, padding, y);
-		y += lineHeight * line.heightScale;
-	}
-
-	if (chatScrollOffset > 0) {
-		ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-		ctx.font = '18px sans-serif';
-		ctx.textAlign = 'center';
-		ctx.fillText('\u25BC scroll down', width / 2, height - 8);
-		ctx.textAlign = 'left';
-	}
-
-	if (maxScroll > 0) {
-		const trackX = width - 14;
-		const trackTop = contentTop - 8;
-		const trackHeight = height - trackTop - 8;
-		ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
-		roundRect(ctx, trackX, trackTop, 8, trackHeight, 4);
-		ctx.fill();
-		const thumbRatio = visibleLineCount / Math.max(1, totalLines);
-		const thumbHeight = Math.max(20, trackHeight * thumbRatio);
-		const scrollRatio = maxScroll > 0 ? (maxScroll - chatScrollOffset) / maxScroll : 0;
-		const thumbY = trackTop + scrollRatio * (trackHeight - thumbHeight);
-		ctx.fillStyle = 'rgba(99, 102, 241, 0.5)';
-		roundRect(ctx, trackX, thumbY, 8, thumbHeight, 4);
-		ctx.fill();
-	}
-
-	chatTexture.needsUpdate = true;
-}
-
 // Renders the same message list into the desktop (non-XR) DOM chat window.
 function renderDomChat() {
 	if (!desktopChatMessages) return;
@@ -1577,176 +1158,13 @@ function renderDomChat() {
 	desktopChatMessages.scrollTop = desktopChatMessages.scrollHeight;
 }
 
-function wrapText(ctx, text, maxWidth) {
-	const words = text.split(' ');
-	const lines = [];
-	let currentLine = '';
-
-	for (const word of words) {
-		const testLine = currentLine + (currentLine ? ' ' : '') + word;
-		const metrics = ctx.measureText(testLine);
-
-		if (metrics.width > maxWidth && currentLine) {
-			lines.push(currentLine);
-			currentLine = word;
-		} else {
-			currentLine = testLine;
-		}
-	}
-
-	if (currentLine) {
-		lines.push(currentLine);
-	}
-
-	return lines; // no line limit — full message displayed
-}
-
-function roundRect(ctx, x, y, w, h, r, topOnly = false) {
-	ctx.beginPath();
-	if (topOnly) {
-		ctx.moveTo(x + r, y);
-		ctx.lineTo(x + w - r, y);
-		ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-		ctx.lineTo(x + w, y + h);
-		ctx.lineTo(x, y + h);
-		ctx.lineTo(x, y + r);
-		ctx.quadraticCurveTo(x, y, x + r, y);
-	} else {
-		ctx.moveTo(x + r, y);
-		ctx.lineTo(x + w - r, y);
-		ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-		ctx.lineTo(x + w, y + h - r);
-		ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-		ctx.lineTo(x + r, y + h);
-		ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-		ctx.lineTo(x, y + r);
-		ctx.quadraticCurveTo(x, y, x + r, y);
-	}
-	ctx.closePath();
-}
-
 // ============================================================================
-// 3D Input Panel (for XR text input)
+// VR keyboard (in-scene text entry)
 // ============================================================================
-function createInputPanel() {
-	inputCanvas = document.createElement('canvas');
-	inputCanvas.width = 1024;
-	inputCanvas.height = 128;
-	inputContext = inputCanvas.getContext('2d');
-
-	inputTexture = new THREE.CanvasTexture(inputCanvas);
-	inputTexture.minFilter = THREE.LinearFilter;
-	inputTexture.magFilter = THREE.LinearFilter;
-
-	const geometry = new THREE.PlaneGeometry(INPUT_PANEL_WIDTH, INPUT_PANEL_HEIGHT);
-	const material = new THREE.MeshBasicMaterial({
-		map: inputTexture,
-		transparent: true,
-		side: THREE.DoubleSide
-	});
-
-	inputPanel = new THREE.Mesh(geometry, material);
-	// Position below chat panel
-	const inputY = 1.4 - CHAT_PANEL_HEIGHT / 2 - INPUT_PANEL_GAP - INPUT_PANEL_HEIGHT / 2;
-	inputPanel.position.set(0, inputY, -CHAT_PANEL_DISTANCE);
-	scene.add(inputPanel);
-
-	renderInputToCanvas();
-}
-
-// Shared geometry for the input panel's buttons so rendering and hit-testing
-// stay in sync. Layout, left to right: [input area][MIC][KEYS][Send].
-function inputPanelLayout() {
-	const W = inputCanvas ? inputCanvas.width : 1024;
-	const H = inputCanvas ? inputCanvas.height : 128;
-	const pad = 12, gap = 8;
-	const sendW = 150, kbdW = 100, micW = 100;
-	const sendX = W - pad - sendW;
-	const kbdX = sendX - gap - kbdW;
-	const micX = kbdX - gap - micW;
-	const inputAreaX = pad;
-	const inputAreaW = micX - gap - inputAreaX;
-	return { W, H, pad, gap, sendW, kbdW, micW, sendX, kbdX, micX, inputAreaX, inputAreaW };
-}
-
-function renderInputToCanvas() {
-	if (!inputContext) return;
-
-	const ctx = inputContext;
-	const width = inputCanvas.width;
-	const height = inputCanvas.height;
-
-	ctx.clearRect(0, 0, width, height);
-
-	// Background
-	ctx.fillStyle = 'rgba(30, 30, 40, 0.95)';
-	roundRect(ctx, 0, 0, width, height, 20);
-	ctx.fill();
-
-	const L = inputPanelLayout();
-
-	// Input area background
-	ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-	roundRect(ctx, L.inputAreaX, 12, L.inputAreaW, height - 24, 12);
-	ctx.fill();
-
-	// Input text or placeholder
-	ctx.font = '24px -apple-system, BlinkMacSystemFont, sans-serif';
-	ctx.textAlign = 'left';
-	if (inputText) {
-		ctx.fillStyle = '#ffffff';
-		let displayText = inputText;
-		while (ctx.measureText(displayText + '|').width > L.inputAreaW - 32 && displayText.length > 0) {
-			displayText = displayText.slice(1);
-		}
-		ctx.fillText(displayText + '|', L.inputAreaX + 12, height / 2 + 8);
-	} else {
-		ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-		let placeholder = 'Ask Claude something...';
-		if (scenePanelSubTab === 'code') placeholder = 'KEYS edits Code — use Apply on left panel';
-		else if (chatSection === 'theme') placeholder = 'Ask for a theme restyle...';
-		ctx.fillText(placeholder, L.inputAreaX + 12, height / 2 + 8);
-	}
-
-	ctx.textAlign = 'center';
-	ctx.font = 'bold 22px -apple-system, BlinkMacSystemFont, sans-serif';
-
-	// Mic button — red while listening (always-on or push-to-talk)
-	const micListening = micMode !== 'off';
-	ctx.fillStyle = micListening ? '#ef4444' : 'rgba(90, 92, 120, 0.9)';
-	roundRect(ctx, L.micX, 12, L.micW, height - 24, 12);
-	ctx.fill();
-	ctx.fillStyle = '#ffffff';
-	ctx.fillText('MIC', L.micX + L.micW / 2, height / 2 + 8);
-
-	// Keyboard show/hide button — indigo when the keyboard is showing
-	ctx.fillStyle = keyboardCollapsed ? 'rgba(90, 92, 120, 0.9)' : '#6366f1';
-	roundRect(ctx, L.kbdX, 12, L.kbdW, height - 24, 12);
-	ctx.fill();
-	ctx.fillStyle = '#ffffff';
-	ctx.fillText('KEYS', L.kbdX + L.kbdW / 2, height / 2 + 8);
-
-	// Send button
-	const gradient = ctx.createLinearGradient(L.sendX, 0, L.sendX + L.sendW, height);
-	gradient.addColorStop(0, '#6366f1');
-	gradient.addColorStop(1, '#8b5cf6');
-	ctx.fillStyle = gradient;
-	roundRect(ctx, L.sendX, 12, L.sendW, height - 24, 12);
-	ctx.fill();
-	ctx.fillStyle = '#ffffff';
-	ctx.font = 'bold 24px -apple-system, BlinkMacSystemFont, sans-serif';
-	ctx.fillText('Send', L.sendX + L.sendW / 2, height / 2 + 8);
-	ctx.textAlign = 'left';
-
-	inputTexture.needsUpdate = true;
-}
-
-// ============================================================================
-// 3D Virtual Keyboard (in-scene text entry for XR)
-// ============================================================================
-// Text is entered entirely in-scene: the controller raycast presses keys and we
-// mutate `inputText` directly. We never focus the DOM input in XR, so the crashy
-// Quest system keyboard is never summoned.
+// The keyboard is a VR window like the menu: real <button>s in #gs-vr-keyboard,
+// painted by htmlInCanvas.js and pressed with the controller ray. Pointing at a
+// text field in the menu opens it; keys edit that field directly. The DOM field
+// is never focused in XR, so the crashy Quest system keyboard is never summoned.
 //
 // Each row is laid out left-to-right; a key's `w` is a relative width weight. A
 // plain string is a character key; an object declares a control key or a char key
@@ -1778,211 +1196,26 @@ function normalizeKey(key) {
 	};
 }
 
-function createKeyboardPanel() {
-	keyboardCanvas = document.createElement('canvas');
-	keyboardCanvas.width = 1024;
-	keyboardCanvas.height = 384;
-	keyboardContext = keyboardCanvas.getContext('2d');
-
-	keyboardTexture = new THREE.CanvasTexture(keyboardCanvas);
-	keyboardTexture.minFilter = THREE.LinearFilter;
-	keyboardTexture.magFilter = THREE.LinearFilter;
-
-	const geometry = new THREE.PlaneGeometry(KEYBOARD_PANEL_WIDTH, KEYBOARD_PANEL_HEIGHT);
-	const material = new THREE.MeshBasicMaterial({
-		map: keyboardTexture,
-		transparent: true,
-		side: THREE.DoubleSide
-	});
-
-	keyboardPanel = new THREE.Mesh(geometry, material);
-	const inputY = 1.4 - CHAT_PANEL_HEIGHT / 2 - INPUT_PANEL_GAP - INPUT_PANEL_HEIGHT / 2;
-	const kbY = inputY - INPUT_PANEL_HEIGHT / 2 - KEYBOARD_PANEL_GAP - KEYBOARD_PANEL_HEIGHT / 2;
-	keyboardPanel.position.set(0, kbY, -CHAT_PANEL_DISTANCE);
-	scene.add(keyboardPanel);
-
-	renderKeyboardToCanvas();
+// The chat field that speech-to-text and the VR keyboard's Send target: the
+// Theme chat input when that sub-tab is showing, else the Scene chat input.
+function activeChatField() {
+	return chatSection === 'theme' && dchatThemeChatInput ? dchatThemeChatInput : desktopChatInput;
 }
 
-function renderKeyboardToCanvas() {
-	if (!keyboardContext) return;
-
-	const ctx = keyboardContext;
-	const W = keyboardCanvas.width;
-	const H = keyboardCanvas.height;
-	const pad = 12;
-	const gap = 8;
-
-	ctx.clearRect(0, 0, W, H);
-	ctx.fillStyle = 'rgba(30, 30, 40, 0.95)';
-	roundRect(ctx, 0, 0, W, H, 20);
-	ctx.fill();
-
-	const rows = keyboardSymbols ? KB_ROWS_SYMBOLS : KB_ROWS_LETTERS;
-	keyboardKeyRects = [];
-
-	const rowH = (H - pad * 2 - gap * (rows.length - 1)) / rows.length;
-	ctx.textAlign = 'center';
-	ctx.textBaseline = 'middle';
-
-	for (let r = 0; r < rows.length; r++) {
-		const keys = rows[r].map(normalizeKey);
-		const totalWeight = keys.reduce((s, k) => s + k.w, 0);
-		const usableW = W - pad * 2 - gap * (keys.length - 1);
-		const unit = usableW / totalWeight;
-		const y = pad + r * (rowH + gap);
-		let x = pad;
-
-		for (const k of keys) {
-			const w = k.w * unit;
-			const idx = keyboardKeyRects.length; // this key's index once pushed below
-
-			// Key background: control keys get a solid tint, char keys a faint fill.
-			if (k.action === 'enter') {
-				const g = ctx.createLinearGradient(x, y, x + w, y + rowH);
-				g.addColorStop(0, '#6366f1');
-				g.addColorStop(1, '#8b5cf6');
-				ctx.fillStyle = g;
-			} else if (k.action === 'shift' && keyboardShift) {
-				ctx.fillStyle = '#6366f1';
-			} else if (k.action !== 'char' && k.action !== 'space') {
-				ctx.fillStyle = 'rgba(90, 92, 120, 0.9)';
-			} else {
-				ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
-			}
-			roundRect(ctx, x, y, w, rowH, 10);
-			ctx.fill();
-
-			// Hover highlight: brighten the key the pointer is currently over.
-			if (idx === keyboardHoverIndex) {
-				ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
-				roundRect(ctx, x, y, w, rowH, 10);
-				ctx.fill();
-				ctx.strokeStyle = '#ffffff';
-				ctx.lineWidth = 3;
-				roundRect(ctx, x + 1.5, y + 1.5, w - 3, rowH - 3, 9);
-				ctx.stroke();
-			}
-
-			// Label
-			ctx.fillStyle = '#ffffff';
-			ctx.font = (k.action === 'enter' ? 'bold ' : '') + '30px -apple-system, BlinkMacSystemFont, sans-serif';
-			let label = k.label;
-			if (k.action === 'char' && keyboardShift && /^[a-z]$/.test(label)) {
-				label = label.toUpperCase();
-			}
-			ctx.fillText(label, x + w / 2, y + rowH / 2 + 1);
-
-			keyboardKeyRects.push({ x, y, w, h: rowH, value: k.value, action: k.action });
-			x += w + gap;
-		}
-	}
-
-	ctx.textAlign = 'left';
-	ctx.textBaseline = 'alphabetic';
-	keyboardTexture.needsUpdate = true;
-}
-
-function keyIndexAtUV(uv) {
-	const cx = uv.x * keyboardCanvas.width;
-	const cy = (1 - uv.y) * keyboardCanvas.height; // UV y is flipped vs canvas y
-	for (let i = 0; i < keyboardKeyRects.length; i++) {
-		const r = keyboardKeyRects[i];
-		if (cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h) return i;
-	}
-	return -1;
-}
-
-// Update which key is highlighted; only re-render the canvas when it changes.
-function setKeyboardHover(index) {
-	if (index === keyboardHoverIndex) return;
-	keyboardHoverIndex = index;
-	renderKeyboardToCanvas();
-}
-
-function handleKeyboardHit(uv) {
-	const idx = keyIndexAtUV(uv);
-	if (idx >= 0) dispatchKey(keyboardKeyRects[idx]);
-}
-
-function xrCodeEditingActive() {
-	return scenePanelSubTab === 'code' && !!dchatCodeEditor;
-}
-
-function setCodeEditorText(text) {
-	if (!dchatCodeEditor) return;
-	dchatCodeEditor.value = text;
-	codeHighlightApi?.refresh();
-	markCodeEditorDirty();
-	renderScenePanel();
-}
-
-function dispatchKey(key) {
-	const htmlField = htmlInCanvasTextField();
-	if (htmlField) {
-		dispatchKeyToDomField(htmlField, key);
-		tickHtmlInCanvas(true);
-		return;
-	}
-	const editCode = xrCodeEditingActive();
-	switch (key.action) {
-		case 'char': {
-			let c = key.value;
-			if (keyboardShift && /^[a-z]$/.test(c)) c = c.toUpperCase();
-			if (editCode) setCodeEditorText(dchatCodeEditor.value + c);
-			else setInputText(inputText + c);
-			// Shift auto-resets after one character, like a phone keyboard.
-			if (keyboardShift) {
-				keyboardShift = false;
-				renderKeyboardToCanvas();
-			}
-			break;
-		}
-		case 'space':
-			if (editCode) setCodeEditorText(dchatCodeEditor.value + ' ');
-			else setInputText(inputText + ' ');
-			break;
-		case 'backspace':
-			if (editCode) setCodeEditorText(dchatCodeEditor.value.slice(0, -1));
-			else setInputText(inputText.slice(0, -1));
-			break;
-		case 'shift':
-			keyboardShift = !keyboardShift;
-			renderKeyboardToCanvas();
-			break;
-		case 'symbols':
-			keyboardSymbols = !keyboardSymbols;
-			keyboardShift = false;
-			renderKeyboardToCanvas();
-			break;
-		case 'enter':
-			if (editCode) setCodeEditorText(dchatCodeEditor.value + '\n');
-			else handleXRSend();
-			break;
-	}
-}
-
-// Set the current input text and keep every representation of it in sync:
-// the state var, the hidden DOM input (used by the desktop path), and the 3D
-// input panel's rendered text.
+// Put dictated text into the active chat field (and the legacy hidden input).
 function setInputText(text) {
-	inputText = text;
-	chatInput.value = text;
-	renderInputToCanvas();
+	const field = activeChatField();
+	if (field) {
+		field.value = text;
+		field.dispatchEvent(new Event('input', { bubbles: true }));
+	}
+	if (chatInput) chatInput.value = text;
 }
 
-// Show/hide the in-scene keyboard. When collapsed it is removed from hit-testing
-// (see the render loop) so the pointer passes through to whatever is behind it.
-function toggleKeyboard() {
-	keyboardCollapsed = !keyboardCollapsed;
-	if (!keyboardCollapsed) htmlKeyboardForDom = true;
-	if (keyboardCollapsed) {
-		htmlKeyboardForDom = false;
-		setKeyboardHover(-1);
-	}
-	applyXrPanelVisibility(xrSessionActive());
-	layoutHtmlInCanvasPanel();
-	renderInputToCanvas(); // refresh the KEYS button state
+// Send whatever is in the active chat field (VR keyboard Send / voice auto-send).
+function sendActiveChatField() {
+	if (chatSection === 'theme' && dchatThemeChatInput) sendThemeChat();
+	else if (desktopSendButton) desktopSendButton.click();
 }
 
 // ============================================================================
@@ -2105,7 +1338,7 @@ async function transcribeAndDeliver(blob, autoSend) {
 		const text = await transcribeBlob(blob);
 		if (text) {
 			setInputText(text);
-			if (autoSend && !isLoading) handleXRSend();
+			if (autoSend && !isLoading) sendActiveChatField();
 			else updateStatus(micMode === 'always' ? 'Mic on — listening' : 'Transcribed', micMode === 'always' ? 'connected' : '');
 		} else {
 			updateStatus(micMode === 'always' ? 'Mic on — listening' : 'No speech detected', micMode === 'always' ? 'connected' : '');
@@ -2127,7 +1360,6 @@ function micError(e) {
 	} else {
 		updateStatus('Speech error: ' + (e && e.message ? e.message : name || 'unknown'), 'error');
 	}
-	renderInputToCanvas();
 	updateMicButtonDOM();
 }
 
@@ -2198,7 +1430,6 @@ async function toggleMicAlwaysOn() {
 	if (micMode === 'always') { stopAlwaysOn(); return; }
 	if (micMode === 'ptt') return; // let a push-to-talk finish first
 	micMode = 'always';
-	renderInputToCanvas();
 	updateMicButtonDOM();
 	updateStatus(sttModelReady ? 'Mic on — listening' : 'Loading speech model…', 'connected');
 	try {
@@ -2210,7 +1441,6 @@ async function toggleMicAlwaysOn() {
 		updateStatus('Mic on — listening', 'connected');
 	} catch (e) {
 		micMode = 'off';
-		renderInputToCanvas();
 		updateMicButtonDOM();
 		micError(e);
 	}
@@ -2222,7 +1452,6 @@ function stopAlwaysOn() {
 	if (mediaRecorder && mediaRecorder.state !== 'inactive') {
 		try { mediaRecorder.stop(); } catch (e) { /* ignore */ }
 	}
-	renderInputToCanvas();
 	updateMicButtonDOM();
 	updateStatus('Mic off', '');
 }
@@ -2236,7 +1465,6 @@ async function startPTT(hand) {
 	if (micMode !== 'off') return; // busy: already listening (always-on or PTT)
 	micMode = 'ptt';
 	pttHand = hand;
-	renderInputToCanvas();
 	updateMicButtonDOM();
 	updateStatus(sttModelReady ? 'Listening… (push-to-talk)' : 'Loading speech model…', '');
 	try {
@@ -2256,7 +1484,6 @@ async function stopPTT(hand) {
 	if (micMode !== 'ptt' || hand !== pttHand) return;
 	micMode = 'off';
 	pttHand = null;
-	renderInputToCanvas();
 	updateMicButtonDOM();
 	const blob = await stopUtterance();
 	await transcribeAndDeliver(blob, true);
@@ -2269,56 +1496,24 @@ function updateMicButtonDOM() {
 	if (desktopMicButton) desktopMicButton.classList.toggle('listening', listening);
 }
 
-// ============================================================================
-// Side Panel (VR environment + Color Wheel)
-// ============================================================================
-function createSidePanel() {
-	sideCanvas = document.createElement('canvas');
-	sideCanvas.width = 256;
-	sideCanvas.height = 768;
-	sideContext = sideCanvas.getContext('2d');
-
-	sideTexture = new THREE.CanvasTexture(sideCanvas);
-	sideTexture.minFilter = THREE.LinearFilter;
-	sideTexture.magFilter = THREE.LinearFilter;
-
-	const geometry = new THREE.PlaneGeometry(SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT);
-	const material = new THREE.MeshBasicMaterial({
-		map: sideTexture,
-		transparent: true,
-		side: THREE.DoubleSide
-	});
-
-	sidePanel = new THREE.Mesh(geometry, material);
-	// Position to the right of the chat panel
-	const sideX = CHAT_PANEL_WIDTH / 2 + SIDE_PANEL_GAP + SIDE_PANEL_WIDTH / 2;
-	sidePanel.position.set(sideX, 1.4, -CHAT_PANEL_DISTANCE);
-	scene.add(sidePanel);
-
-	renderSidePanel();
-}
-
-function hslToRgbString(h, s, l) {
-	return `hsl(${h}, ${Math.round(s * 100)}%, ${Math.round(l * 100)}%)`;
-}
-
 function hslToHex(h, s, l) {
 	const c = new THREE.Color();
 	c.setHSL(h / 360, s, l);
 	return '#' + c.getHexString();
 }
 
-// Mirrors the VR + color/brightness controls (canvas side panel, VR-only)
-// into the desktop Environment tab. Safe to call before the desktop DOM
-// exists (e.g. not yet — guarded by null checks below).
+// Environment tab: AR/VR toggle (+ Exit VR while in a headset or phone XR)
+// and the background colour controls. Safe to call before the DOM exists.
 function renderDomEnv() {
 	if (!dchatEnvModeMount) return;
+	const inXr = !!(renderer && renderer.xr && renderer.xr.isPresenting) ||
+		(typeof mobileXRMode !== 'undefined' && !!mobileXRMode);
 	const buttons = [
 		...ENV_MODE_BUTTONS.map(b => ({
 			...b,
 			variant: (b.id === 'ar' && !isVRMode) || (b.id === 'vr' && isVRMode) ? 'active' : 'inactiveToggle'
 		})),
-		getLayDownButton()
+		...(inXr ? EXIT_XR_BUTTON : [])
 	];
 	mountButtonsToDOM(dchatEnvModeMount, buttons, { width: 256, height: 40, gap: 6, fontSize: 13, perRow: 2 }, handleMenuAction);
 	const colorEnabled = envColorControlsEnabled();
@@ -2334,200 +1529,18 @@ function renderDomEnv() {
 	if (dchatColorPicker) dchatColorPicker.value = hex;
 	if (dchatColorPreview) dchatColorPreview.style.background = hex;
 	if (dchatBrightness) dchatBrightness.value = Math.round(vrBgLight * 100);
+	if (dchatHue) dchatHue.value = Math.round(vrBgHue);
+	if (dchatSaturation) dchatSaturation.value = Math.round(vrBgSat * 100);
 }
 
-/** Color picker is for desktop / mobile browser viewing — not while an AR/VR session is active. */
+/**
+ * Background colour controls work on desktop, phone and in the headset (the
+ * same menu is shown there; hue/saturation/brightness sliders stand in for the
+ * native colour dialog). Phone cardboard/AR has no menu on screen.
+ */
 function envColorControlsEnabled() {
 	if (typeof mobileXRMode !== 'undefined' && mobileXRMode) return false;
-	if (renderer && renderer.xr && renderer.xr.isPresenting) return false;
 	return true;
-}
-
-function renderSidePanel() {
-	renderDomEnv();
-	if (!sideContext) return;
-
-	const ctx = sideContext;
-	const w = sideCanvas.width;
-	const h = sideCanvas.height;
-
-	ctx.clearRect(0, 0, w, h);
-
-	// Background
-	ctx.fillStyle = 'rgba(20, 20, 30, 0.92)';
-	roundRect(ctx, 0, 0, w, h, 16);
-	ctx.fill();
-
-	// Header — matches desktop Environment tab title
-	ctx.fillStyle = 'rgba(99, 102, 241, 0.3)';
-	roundRect(ctx, 0, 0, w, 40, 16, true);
-	ctx.fill();
-	ctx.font = 'bold 18px -apple-system, BlinkMacSystemFont, sans-serif';
-	ctx.fillStyle = '#ffffff';
-	ctx.textAlign = 'center';
-	ctx.fillText('Environment', w / 2, 28);
-
-	// --- VR mode (shared spec - see ENV_MODE_BUTTONS/handleMenuAction) ---
-	const envButtons = ENV_MODE_BUTTONS.map(b => ({
-		...b,
-		variant: (b.id === 'ar' && !isVRMode) || (b.id === 'vr' && isVRMode) ? 'active' : 'inactiveToggle'
-	}));
-	const envLayout = buildButtonLayout(envButtons, { width: w - 32, x: 16, y: 48, height: 44, perRow: 2, gap: 4 });
-	sidePanelEnvButtonBoxes = envLayout.boxes;
-	drawButtonsToCanvas(ctx, sidePanelEnvButtonBoxes, { fontSize: 14 });
-
-	// Exit VR + Lay down / Sit up (XR-only; desktop has no immersive session)
-	const exitY = 48 + envLayout.totalHeight + 6;
-	const exitLayButtons = [...EXIT_XR_BUTTON, getLayDownButton()];
-	const exitLayout = buildButtonLayout(exitLayButtons, { width: w - 32, x: 16, y: exitY, height: 34, perRow: 2, gap: 4 });
-	sidePanelExitButtonBoxes = exitLayout.boxes;
-	drawButtonsToCanvas(ctx, sidePanelExitButtonBoxes, { fontSize: 13 });
-
-	// Live mirror of the desktop #desktop-chat element (off = canvas panels).
-	const htmlY = exitY + exitLayout.totalHeight + 6;
-	const htmlLayout = buildButtonLayout([getHtmlInCanvasButton()], {
-		width: w - 32, x: 16, y: htmlY, height: 36, perRow: 1, gap: 4
-	});
-	// Windows: Fixed (stay put in the world) / Follow head (lazy follow).
-	const anchorY = htmlY + htmlLayout.totalHeight + 4;
-	const anchorLayout = buildButtonLayout([getWindowAnchorButton()], {
-		width: w - 32, x: 16, y: anchorY, height: 32, perRow: 1, gap: 4
-	});
-	sidePanelHtmlButtonBoxes = htmlLayout.boxes.concat(anchorLayout.boxes);
-	drawButtonsToCanvas(ctx, sidePanelHtmlButtonBoxes, { fontSize: 12 });
-
-	// Navigation — same choices as desktop Environment → Navigation
-	const navY = anchorY + anchorLayout.totalHeight + 6;
-	ctx.font = '13px -apple-system, BlinkMacSystemFont, sans-serif';
-	ctx.fillStyle = 'rgba(255,255,255,0.4)';
-	ctx.textAlign = 'center';
-	ctx.fillText('Navigation', w / 2, navY + 12);
-	const navButtons = NAV_MODE_BUTTONS.map(b => ({
-		...b,
-		variant: (b.action === 'env:nav:free' && locomotionMode === 'free')
-			|| (b.action === 'env:nav:planar' && locomotionMode === 'planar')
-			? 'active' : 'inactiveToggle'
-	}));
-	const navLayout = buildButtonLayout(navButtons, { width: w - 32, x: 16, y: navY + 18, height: 32, perRow: 2, gap: 4 });
-	sidePanelNavButtonBoxes = navLayout.boxes;
-	drawButtonsToCanvas(ctx, sidePanelNavButtonBoxes, { fontSize: 12 });
-
-	const controlsTop = navY + 18 + navLayout.totalHeight + 10;
-
-	// --- Section label ---
-	ctx.font = '14px -apple-system, BlinkMacSystemFont, sans-serif';
-	ctx.fillStyle = 'rgba(255,255,255,0.4)';
-	ctx.textAlign = 'center';
-	ctx.fillText('Background Color', w / 2, controlsTop + 14);
-
-	// --- Color Wheel (below nav; keep radius so it still fits) ---
-	const wheelCX = w / 2;
-	const wheelCY = controlsTop + 120;
-	const wheelR = 88;
-	const wheelInnerR = 18;
-	sidePanelWheelHit = { cx: wheelCX, cy: wheelCY, r: wheelR, innerR: wheelInnerR };
-
-	// Draw color wheel using arc segments
-	for (let angle = 0; angle < 360; angle += 1) {
-		const startRad = (angle - 1) * Math.PI / 180;
-		const endRad = (angle + 1) * Math.PI / 180;
-
-		// Gradient from white center to full saturation at edge
-		const grad = ctx.createRadialGradient(wheelCX, wheelCY, wheelInnerR, wheelCX, wheelCY, wheelR);
-		grad.addColorStop(0, hslToRgbString(angle, 0.0, 0.85));
-		grad.addColorStop(0.5, hslToRgbString(angle, 0.6, 0.5));
-		grad.addColorStop(1, hslToRgbString(angle, 1.0, 0.45));
-
-		ctx.beginPath();
-		ctx.moveTo(wheelCX, wheelCY);
-		ctx.arc(wheelCX, wheelCY, wheelR, startRad, endRad);
-		ctx.closePath();
-		ctx.fillStyle = grad;
-		ctx.fill();
-	}
-
-	// Dark center dot
-	ctx.beginPath();
-	ctx.arc(wheelCX, wheelCY, wheelInnerR - 2, 0, Math.PI * 2);
-	ctx.fillStyle = 'rgba(20, 20, 30, 0.9)';
-	ctx.fill();
-
-	// Selection indicator on the wheel
-	const selAngle = vrBgHue * Math.PI / 180;
-	const selDist = wheelInnerR + vrBgSat * (wheelR - wheelInnerR);
-	const selX = wheelCX + Math.cos(selAngle) * selDist;
-	const selY = wheelCY + Math.sin(selAngle) * selDist;
-
-	ctx.beginPath();
-	ctx.arc(selX, selY, 8, 0, Math.PI * 2);
-	ctx.strokeStyle = '#ffffff';
-	ctx.lineWidth = 3;
-	ctx.stroke();
-	ctx.beginPath();
-	ctx.arc(selX, selY, 8, 0, Math.PI * 2);
-	ctx.strokeStyle = '#000000';
-	ctx.lineWidth = 1;
-	ctx.stroke();
-
-	// --- Brightness Slider (below wheel) ---
-	const sliderY = wheelCY + wheelR + 28;
-	const sliderH = 28;
-	const sliderPad = 24;
-	const sliderW = w - sliderPad * 2;
-	sidePanelSliderHit = { y: sliderY, h: sliderH, pad: sliderPad };
-
-	ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
-	ctx.fillStyle = 'rgba(255,255,255,0.4)';
-	ctx.textAlign = 'center';
-	ctx.fillText('Brightness', w / 2, sliderY - 8);
-
-	// Slider track gradient: black to current hue full bright
-	const sliderGrad = ctx.createLinearGradient(sliderPad, 0, sliderPad + sliderW, 0);
-	sliderGrad.addColorStop(0, hslToRgbString(vrBgHue, vrBgSat, 0.02));
-	sliderGrad.addColorStop(0.5, hslToRgbString(vrBgHue, vrBgSat, 0.5));
-	sliderGrad.addColorStop(1, hslToRgbString(vrBgHue, vrBgSat, 0.95));
-	ctx.fillStyle = sliderGrad;
-	roundRect(ctx, sliderPad, sliderY, sliderW, sliderH, 8);
-	ctx.fill();
-
-	// Slider thumb
-	const thumbX = sliderPad + vrBgLight * sliderW;
-	ctx.beginPath();
-	ctx.arc(thumbX, sliderY + sliderH / 2, 12, 0, Math.PI * 2);
-	ctx.fillStyle = hslToRgbString(vrBgHue, vrBgSat, vrBgLight);
-	ctx.fill();
-	ctx.strokeStyle = '#ffffff';
-	ctx.lineWidth = 2;
-	ctx.stroke();
-
-	// --- Color Preview ---
-	const prevY = sliderY + sliderH + 18;
-	const prevH = 44;
-	ctx.fillStyle = hslToRgbString(vrBgHue, vrBgSat, vrBgLight);
-	roundRect(ctx, sliderPad, prevY, sliderW, prevH, 10);
-	ctx.fill();
-
-	// Label
-	ctx.font = 'bold 16px -apple-system, BlinkMacSystemFont, sans-serif';
-	ctx.fillStyle = vrBgLight > 0.5 ? '#000000' : '#ffffff';
-	ctx.textAlign = 'center';
-	ctx.fillText('Preview', w / 2, prevY + prevH / 2 + 6);
-
-	// Dim overlay if in AR mode (color wheel inactive)
-	if (!isVRMode) {
-		ctx.fillStyle = 'rgba(20, 20, 30, 0.6)';
-		const dimTop = controlsTop;
-		roundRect(ctx, 0, dimTop, w, h - dimTop - 8, 0);
-		ctx.fill();
-		ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
-		ctx.fillStyle = 'rgba(255,255,255,0.5)';
-		ctx.textAlign = 'center';
-		ctx.fillText('Switch to VR', w / 2, wheelCY);
-		ctx.fillText('to customize', w / 2, wheelCY + 22);
-	}
-
-	ctx.textAlign = 'left';
-	sideTexture.needsUpdate = true;
 }
 
 function applyEnvironmentMode() {
@@ -2562,66 +1575,6 @@ function applyEnvironmentMode() {
 	}
 	scene.background = null;
 	renderer.setClearColor(0x000000, 0.0);
-}
-
-function handleSidePanelHit(uv) {
-	const canvasX = uv.x * 256;
-	const canvasY = (1 - uv.y) * 768; // UV y is flipped vs canvas y
-
-	// VR mode (shared spec - see ENV_MODE_BUTTONS/handleMenuAction)
-	const envHit = hitTestButtons(sidePanelEnvButtonBoxes, canvasX, canvasY);
-	if (envHit) {
-		handleMenuAction(envHit.action);
-		return;
-	}
-
-	const exitHit = hitTestButtons(sidePanelExitButtonBoxes, canvasX, canvasY);
-	if (exitHit) {
-		handleMenuAction(exitHit.action);
-		return;
-	}
-
-	const htmlHit = hitTestButtons(sidePanelHtmlButtonBoxes, canvasX, canvasY);
-	if (htmlHit) {
-		handleMenuAction(htmlHit.action);
-		return;
-	}
-
-	const navHit = hitTestButtons(sidePanelNavButtonBoxes, canvasX, canvasY);
-	if (navHit) {
-		handleMenuAction(navHit.action);
-		return;
-	}
-
-	// Only handle color controls in VR mode
-	if (!isVRMode) return;
-
-	const wheelCX = sidePanelWheelHit.cx;
-	const wheelCY = sidePanelWheelHit.cy;
-	const wheelR = sidePanelWheelHit.r;
-	const wheelInnerR = sidePanelWheelHit.innerR;
-	const dx = canvasX - wheelCX;
-	const dy = canvasY - wheelCY;
-	const dist = Math.sqrt(dx * dx + dy * dy);
-
-	if (dist <= wheelR && dist >= wheelInnerR) {
-		vrBgHue = ((Math.atan2(dy, dx) * 180 / Math.PI) + 360) % 360;
-		vrBgSat = Math.max(0, Math.min(1, (dist - wheelInnerR) / (wheelR - wheelInnerR)));
-		applyEnvironmentMode();
-		renderSidePanel();
-		return;
-	}
-
-	const sliderY = sidePanelSliderHit.y;
-	const sliderH = sidePanelSliderHit.h;
-	const sliderPad = sidePanelSliderHit.pad;
-	if (canvasY >= sliderY - 10 && canvasY <= sliderY + sliderH + 10) {
-		const sliderW = 256 - sliderPad * 2;
-		vrBgLight = Math.max(0.02, Math.min(0.95, (canvasX - sliderPad) / sliderW));
-		applyEnvironmentMode();
-		renderSidePanel();
-		return;
-	}
 }
 
 // ============================================================================
@@ -2864,7 +1817,7 @@ async function hotReloadFromEditor({ fromLive = false } = {}) {
 			}
 		}
 		updateCodeEditorHint();
-		renderScenePanel();
+		renderDomSceneList();
 		if (errors.length) {
 			const e = errors[0];
 			codeEditorDirty = true;
@@ -2993,7 +1946,7 @@ async function applyCodeFromEditor({ fromLive = false } = {}) {
 		}
 		updateCodeEditorHint();
 		setCodeEditorStatus('Full reset: scene rebuilt from code', 'ok');
-		renderScenePanel();
+		renderDomSceneList();
 	} catch (err) {
 		console.error('Code editor apply error:', err);
 		setCodeEditorStatus(`Error: ${err?.message || err}`, 'error');
@@ -3089,7 +2042,7 @@ function clearSceneContent() {
 	clearUserObjects();
 	recenterOrbitPivot();
 	notifyCodeEditorExternalChange();
-	renderScenePanel();
+	renderDomSceneList();
 	updateStatus('Scene cleared', 'connected');
 }
 
@@ -3222,8 +2175,7 @@ function addLoadedScene(data, fallbackName) {
 		});
 	});
 
-	loadSceneThumbnails();
-	renderScenePanel();
+	renderDomSceneList();
 	notifyCodeEditorExternalChange();
 	GSContext.restoreFromScene(data, { source: 'file' }).catch(err => console.warn('creation context restore failed:', err));
 	return sc;
@@ -3309,8 +2261,7 @@ function applyDisplayOnlyMode() {
 	displayOnlyMode = true;
 	document.body.classList.add('display-only');
 	setUiCollapsed(true);
-	if (uiTogglePanel) uiTogglePanel.visible = false;
-	if (hudStatusPanel) hudStatusPanel.visible = false;
+	applyXrPanelVisibility();
 	if (typeof setDesktopChatMinimized === 'function') {
 		setDesktopChatMinimized(true);
 	} else if (desktopChat) {
@@ -3544,7 +2495,7 @@ function appendCommunityDatesEl(parent, item) {
 
 function renderCommunitySceneList(scenes) {
 	communityScenesCache = scenes;
-	if (scenePanelSubTab === 'community') renderScenePanel();
+	if (scenePanelSubTab === 'community') renderDomSceneList();
 
 	dchatCommunityList.innerHTML = '';
 	if (scenes.length === 0) {
@@ -3666,7 +2617,7 @@ function renderCommunityLoadModeControls() {
 function setCommunityLoadMode(mode) {
 	communityLoadMode = mode === 'layer' ? 'layer' : 'clear';
 	renderCommunityLoadModeControls();
-	if (scenePanelSubTab === 'community') renderScenePanel();
+	if (scenePanelSubTab === 'community') renderDomSceneList();
 	updateStatus(
 		communityLoadMode === 'layer'
 			? 'Community load: layer onto the current scene'
@@ -3748,10 +2699,9 @@ function upsertCommunityLoadedScene(data, fallbackName, key) {
 }
 
 function finishCommunityLoadUi() {
-	loadSceneThumbnails();
 	notifyCodeEditorExternalChange();
 	if (dchatCommunityList && communityScenesCache.length) renderCommunitySceneList(communityScenesCache);
-	else renderScenePanel();
+	else renderDomSceneList();
 }
 
 function loadCommunityScene(cs, { mode = communityLoadMode } = {}) {
@@ -3901,8 +2851,8 @@ const DEFAULT_THEME = {
 		'--dchat-tab-active-bg': '#4f46e5',
 		'--dchat-tab-active-color': '#ffffff',
 		'--dchat-input-bg': 'rgba(255, 255, 255, 0.1)',
-		'--dchat-accent': '#8b5cf6',
-		'--dchat-accent-2': '#6366f1',
+		'--dchat-accent': '#6d28d9',
+		'--dchat-accent-2': '#4f46e5',
 		'--dchat-radius': '18px',
 		'--dchat-font': '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
 	},
@@ -3969,8 +2919,8 @@ function setRememberTheme(on) {
 	} catch { /* ignore quota */ }
 	syncRememberThemeCheckboxes();
 	cacheLastTheme(currentTheme || DEFAULT_THEME);
-	if (chatCanvas) renderChatToCanvas();
-	if (scenePanelSubTab === 'community' && communitySection === 'themes') renderScenePanel();
+	renderDomChat();
+	if (scenePanelSubTab === 'community' && communitySection === 'themes') renderDomSceneList();
 }
 
 function cacheLastTheme(theme) {
@@ -4076,9 +3026,7 @@ function setChatSection(section) {
 	const themeSec = document.getElementById('dchat-chat-section-theme');
 	if (sceneSec) sceneSec.classList.toggle('active', chatSection === 'scene');
 	if (themeSec) themeSec.classList.toggle('active', chatSection === 'theme');
-	chatScrollOffset = 0;
-	renderChatToCanvas();
-	renderInputToCanvas();
+	renderDomChat();
 }
 
 function uploadCurrentThemeToCommunity() {
@@ -4114,7 +3062,7 @@ function refreshCommunityThemes() {
 		})
 		.catch(err => {
 			communityThemesCache = [];
-			if (xrThemes) renderScenePanel();
+			if (xrThemes) renderDomSceneList();
 			if (!dchatThemesList) return;
 			dchatThemesList.innerHTML = '';
 			const empty = document.createElement('div');
@@ -4126,7 +3074,7 @@ function refreshCommunityThemes() {
 
 function renderCommunityThemeList(themes) {
 	communityThemesCache = themes;
-	if (scenePanelSubTab === 'community' && communitySection === 'themes') renderScenePanel();
+	if (scenePanelSubTab === 'community' && communitySection === 'themes') renderDomSceneList();
 	if (!dchatThemesList) return;
 	dchatThemesList.innerHTML = '';
 	if (themes.length === 0) {
@@ -4212,7 +3160,7 @@ async function sendThemeChat() {
 	themeChatLoading = true;
 	if (dchatThemeChatSend) dchatThemeChatSend.disabled = true;
 	appendThemeChatBubble('system', thinkingStatusText());
-	renderChatToCanvas();
+	renderDomChat();
 	try {
 		let data;
 		if (selectedBackend === 'ollama') {
@@ -4257,7 +3205,7 @@ async function sendThemeChat() {
 	} finally {
 		themeChatLoading = false;
 		if (dchatThemeChatSend) dchatThemeChatSend.disabled = false;
-		renderChatToCanvas();
+		renderDomChat();
 	}
 }
 
@@ -4327,34 +3275,8 @@ exportCancelBtn.addEventListener('click', hideExportModal);
 exportConfirmBtn.addEventListener('click', doExport);
 exportDownloadBtn.addEventListener('click', doDownloadExport);
 
-// Scene Manager 3D Panel
-function createScenePanel() {
-	sceneCanvas = document.createElement('canvas');
-	sceneCanvas.width = 384;
-	sceneCanvas.height = 768;
-	sceneContext = sceneCanvas.getContext('2d');
-
-	sceneTexture = new THREE.CanvasTexture(sceneCanvas);
-	sceneTexture.minFilter = THREE.LinearFilter;
-	sceneTexture.magFilter = THREE.LinearFilter;
-
-	const geometry = new THREE.PlaneGeometry(SCENE_PANEL_WIDTH, SCENE_PANEL_HEIGHT);
-	const material = new THREE.MeshBasicMaterial({
-		map: sceneTexture,
-		transparent: true,
-		side: THREE.DoubleSide
-	});
-
-	scenePanel = new THREE.Mesh(geometry, material);
-	const sceneX = -(CHAT_PANEL_WIDTH / 2 + SCENE_PANEL_GAP + SCENE_PANEL_WIDTH / 2);
-	scenePanel.position.set(sceneX, 1.4, -CHAT_PANEL_DISTANCE);
-	scene.add(scenePanel);
-
-	renderScenePanel();
-}
-
-// Mirrors the loaded-scenes list (canvas scene panel, VR-only) into the
-// desktop Scenes tab: checkbox toggles active, × removes, thumbnail if any.
+// The loaded-scenes list in the Scenes tab: checkbox toggles active,
+// × removes, thumbnail if any.
 function renderDomSceneList() {
 	if (!dchatSceneList) return;
 
@@ -4376,7 +3298,7 @@ function renderDomSceneList() {
 			checkbox.addEventListener('change', () => {
 				sc.active = checkbox.checked;
 				rebuildSceneFromActive();
-				renderScenePanel();
+				renderDomSceneList();
 				notifyCodeEditorExternalChange();
 			});
 
@@ -4396,7 +3318,7 @@ function renderDomSceneList() {
 			remove.addEventListener('click', () => {
 				loadedScenes.splice(i, 1);
 				rebuildSceneFromActive();
-				renderScenePanel();
+				renderDomSceneList();
 				notifyCodeEditorExternalChange();
 			});
 
@@ -4409,676 +3331,6 @@ function renderDomSceneList() {
 	dchatExportCombinedMount.classList.toggle('visible', hasContent && loadedScenes.length > 0);
 }
 
-// Last clamp limits from renderScenePanel, so stick scrolling can tell when
-// it is already at an end and skip the redraw + texture upload.
-const _scenePanelMaxScroll = { scenes: Infinity, files: Infinity, code: Infinity };
-
-function renderScenePanel({ dom = true } = {}) {
-	// The desktop Scenes list only changes with the scenes themselves; stick
-	// scrolling the XR panel passes dom:false so it isn't rebuilt per frame.
-	if (dom) renderDomSceneList();
-	if (!sceneContext) return;
-
-	const ctx = sceneContext;
-	const w = sceneCanvas.width;
-	const h = sceneCanvas.height;
-
-	ctx.clearRect(0, 0, w, h);
-
-	// Background
-	ctx.fillStyle = 'rgba(20, 20, 30, 0.92)';
-	roundRect(ctx, 0, 0, w, h, 16);
-	ctx.fill();
-
-	// Header — title follows active section (Scenes / Files / Code / Community)
-	const headerTitles = {
-		scenes: 'Scenes',
-		files: 'Files',
-		code: 'Code',
-		community: 'Community'
-	};
-	ctx.fillStyle = 'rgba(139, 92, 246, 0.3)';
-	roundRect(ctx, 0, 0, w, 50, 16, true);
-	ctx.fill();
-	ctx.font = 'bold 24px -apple-system, BlinkMacSystemFont, sans-serif';
-	ctx.fillStyle = '#ffffff';
-	ctx.textAlign = 'center';
-	ctx.fillText(headerTitles[scenePanelSubTab] || 'Scenes', w / 2, 35);
-
-	// Top-level sub-tabs (Scenes | Files | Code | Community)
-	const subTabButtons = SCENE_PANEL_SUB_TABS.map(t => ({
-		...t,
-		variant: scenePanelSubTab === t.id ? 'active' : 'inactiveToggle'
-	}));
-	// Same order as desktop tabs after Chat/Environment: Scenes · Files · Code · Community
-	const subTabLayout = buildButtonLayout(subTabButtons, {
-		width: w - 24, x: 12, y: 56, height: 36, perRow: 4, gap: 6
-	});
-	scenePanelSubTabBoxes = subTabLayout.boxes;
-	scenePanelNestedTabBoxes = [];
-	drawButtonsToCanvas(ctx, scenePanelSubTabBoxes, { fontSize: 12 });
-
-	let contentTop = 56 + subTabLayout.totalHeight + 10;
-	scenePanelButtonBoxes = [];
-
-	if (scenePanelSubTab === 'scenes') {
-		const btnLayout = buildButtonLayout(SCENES_BUTTONS_XR, {
-			width: w - 24, x: 12, y: contentTop, height: 44, minWidth: 100, gap: 8
-		});
-		scenePanelButtonBoxes = btnLayout.boxes;
-		drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 15 });
-
-		const sepY = contentTop + btnLayout.totalHeight + 8;
-		ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-		ctx.fillRect(12, sepY, w - 24, 1);
-
-		const listTop = sepY + 8;
-		scenePanelListTop = listTop;
-		const itemH = 72;
-		const listBottom = 688;
-		const maxVisible = Math.floor((listBottom - listTop) / itemH);
-
-		if (loadedScenes.length === 0) {
-			ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
-			ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-			ctx.textAlign = 'center';
-			ctx.fillText('No scenes loaded', w / 2, listTop + 40);
-			ctx.fillText('Tap Load to import', w / 2, listTop + 65);
-		} else {
-			const maxScroll = Math.max(0, loadedScenes.length - maxVisible);
-			_scenePanelMaxScroll.scenes = maxScroll;
-			sceneScrollOffset = Math.max(0, Math.min(sceneScrollOffset, maxScroll));
-
-			for (let i = 0; i < maxVisible && (i + sceneScrollOffset) < loadedScenes.length; i++) {
-				const sc = loadedScenes[i + sceneScrollOffset];
-				const itemY = listTop + i * itemH;
-
-				ctx.fillStyle = sc.active ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255, 255, 255, 0.03)';
-				roundRect(ctx, 8, itemY, w - 16, itemH - 4, 8);
-				ctx.fill();
-
-				const chkX = 16, chkY = itemY + (itemH - 4) / 2 - 12;
-				ctx.strokeStyle = sc.active ? '#6366f1' : 'rgba(255,255,255,0.3)';
-				ctx.lineWidth = 2;
-				roundRect(ctx, chkX, chkY, 24, 24, 4);
-				ctx.stroke();
-				if (sc.active) {
-					ctx.fillStyle = '#6366f1';
-					roundRect(ctx, chkX + 2, chkY + 2, 20, 20, 3);
-					ctx.fill();
-					ctx.strokeStyle = '#ffffff';
-					ctx.lineWidth = 2.5;
-					ctx.beginPath();
-					ctx.moveTo(chkX + 6, chkY + 12);
-					ctx.lineTo(chkX + 11, chkY + 18);
-					ctx.lineTo(chkX + 19, chkY + 7);
-					ctx.stroke();
-				}
-
-				const thumbX = 48, thumbY2 = itemY + 8, thumbSize = itemH - 20;
-				if (sc._thumbImage) {
-					ctx.drawImage(sc._thumbImage, thumbX, thumbY2, thumbSize, thumbSize);
-				} else {
-					ctx.fillStyle = 'rgba(255,255,255,0.08)';
-					roundRect(ctx, thumbX, thumbY2, thumbSize, thumbSize, 6);
-					ctx.fill();
-					ctx.font = '10px sans-serif';
-					ctx.fillStyle = 'rgba(255,255,255,0.25)';
-					ctx.textAlign = 'center';
-					ctx.fillText('No img', thumbX + thumbSize / 2, thumbY2 + thumbSize / 2 + 4);
-				}
-
-				ctx.textAlign = 'left';
-				ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
-				ctx.fillStyle = '#ffffff';
-				const nameX = thumbX + thumbSize + 10;
-				const maxNameW = w - nameX - 40;
-				let dName = sc.name;
-				while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
-				if (dName !== sc.name) dName += '\u2026';
-				ctx.fillText(dName, nameX, itemY + itemH / 2 + 5);
-
-				const xX = w - 36, xY = itemY + (itemH - 4) / 2 - 10;
-				ctx.fillStyle = 'rgba(239, 68, 68, 0.3)';
-				roundRect(ctx, xX, xY, 24, 24, 4);
-				ctx.fill();
-				ctx.font = 'bold 16px sans-serif';
-				ctx.fillStyle = '#ef4444';
-				ctx.textAlign = 'center';
-				ctx.fillText('\u00d7', xX + 12, xY + 18);
-			}
-
-			if (sceneScrollOffset > 0) {
-				ctx.fillStyle = 'rgba(255,255,255,0.3)';
-				ctx.font = '14px sans-serif';
-				ctx.textAlign = 'center';
-				ctx.fillText('\u25b2 more', w / 2, listTop - 4);
-			}
-			if (sceneScrollOffset < maxScroll) {
-				ctx.fillStyle = 'rgba(255,255,255,0.3)';
-				ctx.font = '14px sans-serif';
-				ctx.textAlign = 'center';
-				ctx.fillText('\u25bc more', w / 2, listBottom + 14);
-			}
-		}
-
-		const hasContent = loadedScenes.some(s => s.active) || executedCodeBlocks.length > 0;
-		if (hasContent && loadedScenes.length > 0) {
-			drawButtonsToCanvas(ctx, buildButtonLayout(EXPORT_COMBINED_BUTTON, {
-				width: w - 24, x: 12, y: 700, height: 48, perRow: 1
-			}).boxes, { fontSize: 18 });
-		}
-	} else if (scenePanelSubTab === 'files') {
-		const btnLayout = buildButtonLayout(FILES_BUTTONS, {
-			width: w - 24, x: 12, y: contentTop, height: 44, perRow: 2, gap: 8
-		});
-		scenePanelButtonBoxes = btnLayout.boxes;
-		drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 14 });
-
-		const sepY = contentTop + btnLayout.totalHeight + 8;
-		ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-		ctx.fillRect(12, sepY, w - 24, 1);
-
-		ctx.font = '13px -apple-system, BlinkMacSystemFont, sans-serif';
-		ctx.fillStyle = 'rgba(255,255,255,0.4)';
-		ctx.textAlign = 'center';
-		ctx.fillText('Context library for chat prompts', w / 2, sepY + 22);
-
-		const listTop = sepY + 34;
-		scenePanelListTop = listTop;
-		const itemH = 56;
-		const listBottom = h - 16;
-		const maxVisible = Math.floor((listBottom - listTop) / itemH);
-		const maxScroll = Math.max(0, contextLibrary.length - maxVisible);
-		_scenePanelMaxScroll.files = maxScroll;
-		filesScrollOffset = Math.max(0, Math.min(filesScrollOffset, maxScroll));
-
-		if (contextLibrary.length === 0) {
-			ctx.font = '15px -apple-system, BlinkMacSystemFont, sans-serif';
-			ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-			ctx.textAlign = 'center';
-			ctx.fillText('No files yet', w / 2, listTop + 40);
-			ctx.fillText('Upload images or text', w / 2, listTop + 62);
-		} else {
-			for (let i = 0; i < maxVisible && (i + filesScrollOffset) < contextLibrary.length; i++) {
-				const rec = contextLibrary[i + filesScrollOffset];
-				const itemY = listTop + i * itemH;
-
-				ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
-				roundRect(ctx, 8, itemY, w - 16, itemH - 4, 8);
-				ctx.fill();
-
-				ctx.textAlign = 'left';
-				ctx.font = '18px sans-serif';
-				ctx.fillStyle = '#ffffff';
-				ctx.fillText(rec.kind === 'image' ? '🖼️' : '📄', 16, itemY + itemH / 2 + 6);
-
-				ctx.font = '14px -apple-system, BlinkMacSystemFont, sans-serif';
-				const nameX = 44;
-				const maxNameW = w - nameX - 80;
-				let dName = rec.name || 'file';
-				while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
-				if (dName !== rec.name) dName += '\u2026';
-				ctx.fillText(dName, nameX, itemY + itemH / 2 - 4);
-				ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
-				ctx.fillStyle = 'rgba(255,255,255,0.4)';
-				ctx.fillText(
-					`${rec.kind === 'image' ? 'Image' : 'Text'} \u00b7 ${formatFileSize(rec.size || 0)}`,
-					nameX, itemY + itemH / 2 + 14
-				);
-
-				const pillW = 64, pillH = itemH - 16, pillX = w - 16 - pillW, pillY = itemY + 8;
-				ctx.fillStyle = 'rgba(239, 68, 68, 0.35)';
-				roundRect(ctx, pillX, pillY, pillW, pillH, 8);
-				ctx.fill();
-				ctx.font = 'bold 12px -apple-system, BlinkMacSystemFont, sans-serif';
-				ctx.fillStyle = '#ffffff';
-				ctx.textAlign = 'center';
-				ctx.fillText('Remove', pillX + pillW / 2, pillY + pillH / 2 + 4);
-			}
-			if (filesScrollOffset > 0) {
-				ctx.fillStyle = 'rgba(255,255,255,0.3)';
-				ctx.font = '14px sans-serif';
-				ctx.textAlign = 'center';
-				ctx.fillText('\u25b2 more', w / 2, listTop - 2);
-			}
-			if (filesScrollOffset < maxScroll) {
-				ctx.fillStyle = 'rgba(255,255,255,0.3)';
-				ctx.font = '14px sans-serif';
-				ctx.textAlign = 'center';
-				ctx.fillText('\u25bc more', w / 2, listBottom - 2);
-			}
-		}
-	} else if (scenePanelSubTab === 'code') {
-		const liveOn = !!(dchatCodeLive && dchatCodeLive.checked);
-		const codeBtns = CODE_BUTTONS.map(b => {
-			if (b.id === 'codeLive') {
-				return {
-					...b,
-					label: liveOn ? 'Live: On' : 'Live: Off',
-					variant: liveOn ? 'active' : 'inactiveToggle'
-				};
-			}
-			return { ...b };
-		});
-		const btnLayout = buildButtonLayout(codeBtns, {
-			width: w - 24, x: 12, y: contentTop, height: 36, perRow: 2, gap: 6
-		});
-		scenePanelButtonBoxes = btnLayout.boxes;
-		drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 12 });
-
-		const sepY = contentTop + btnLayout.totalHeight + 8;
-		ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-		ctx.fillRect(12, sepY, w - 24, 1);
-
-		ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
-		ctx.fillStyle = 'rgba(255,255,255,0.4)';
-		ctx.textAlign = 'center';
-		const statusTxt = (dchatCodeStatus && dchatCodeStatus.textContent) || (codeEditorDirty ? 'Edited' : 'Synced');
-		ctx.fillText(`${statusTxt} \u00b7 KEYS edits code when this tab is open`, w / 2, sepY + 18);
-
-		const listTop = sepY + 28;
-		scenePanelListTop = listTop;
-		const codeText = (dchatCodeEditor && dchatCodeEditor.value) || buildCodeEditorSource() || '';
-		const codeLines = codeText.length ? codeText.split('\n') : ['// No vr-exec blocks yet — chat to generate, or type here'];
-		const lineH = 18;
-		const listBottom = h - 16;
-		const maxVisible = Math.floor((listBottom - listTop) / lineH);
-		const maxScroll = Math.max(0, codeLines.length - maxVisible);
-		_scenePanelMaxScroll.code = maxScroll;
-		codeScrollOffset = Math.max(0, Math.min(codeScrollOffset, maxScroll));
-
-		ctx.fillStyle = 'rgba(0,0,0,0.25)';
-		roundRect(ctx, 8, listTop - 4, w - 16, listBottom - listTop + 8, 8);
-		ctx.fill();
-
-		ctx.textAlign = 'left';
-		ctx.font = '13px ui-monospace, SFMono-Regular, Menlo, monospace';
-		// Monospace: truncate by character count instead of re-measuring the
-		// line once per dropped character.
-		const maxW = w - 52;
-		const charW = ctx.measureText('MMMMMMMMMM').width / 10 || 8;
-		const maxChars = Math.max(4, Math.floor(maxW / charW));
-		for (let i = 0; i < maxVisible && (i + codeScrollOffset) < codeLines.length; i++) {
-			const line = codeLines[i + codeScrollOffset];
-			const y = listTop + i * lineH + 12;
-			ctx.fillStyle = 'rgba(255,255,255,0.25)';
-			ctx.fillText(String(i + codeScrollOffset + 1).padStart(3, ' '), 12, y);
-			ctx.fillStyle = '#e5e7eb';
-			let display = line.replace(/\t/g, '  ');
-			if (display.length > maxChars) display = display.slice(0, maxChars - 1) + '\u2026';
-			ctx.fillText(display, 44, y);
-		}
-		if (codeScrollOffset > 0) {
-			ctx.fillStyle = 'rgba(255,255,255,0.3)';
-			ctx.font = '12px sans-serif';
-			ctx.textAlign = 'center';
-			ctx.fillText('\u25b2', w / 2, listTop - 6);
-		}
-		if (codeScrollOffset < maxScroll) {
-			ctx.fillStyle = 'rgba(255,255,255,0.3)';
-			ctx.font = '12px sans-serif';
-			ctx.textAlign = 'center';
-			ctx.fillText('\u25bc', w / 2, listBottom + 2);
-		}
-	} else if (scenePanelSubTab === 'community') {
-		// Nested Scenes | Themes (matches desktop Community tab)
-		const nestedBtns = COMMUNITY_NESTED_TABS.map(t => ({
-			...t,
-			variant: communitySection === t.id ? 'active' : 'inactiveToggle'
-		}));
-		const nestedLayout = buildButtonLayout(nestedBtns, {
-			width: w - 24, x: 12, y: contentTop, height: 32, perRow: 2, gap: 6
-		});
-		scenePanelNestedTabBoxes = nestedLayout.boxes;
-		drawButtonsToCanvas(ctx, scenePanelNestedTabBoxes, { fontSize: 13 });
-		contentTop += nestedLayout.totalHeight + 8;
-
-		if (communitySection === 'themes') {
-			const btnLayout = buildButtonLayout(THEME_BUTTONS, {
-				width: w - 24, x: 12, y: contentTop, height: 40, perRow: 3, gap: 6
-			});
-			const rememberLayout = buildButtonLayout([{
-				id: 'rememberTheme',
-				label: rememberTheme ? '\u2611 Remember theme' : '\u2610 Remember theme',
-				action: 'theme:toggleRemember',
-				variant: rememberTheme ? 'active' : 'inactiveToggle'
-			}], {
-				width: w - 24,
-				x: 12,
-				y: contentTop + btnLayout.totalHeight + 6,
-				height: 34,
-				perRow: 1,
-				gap: 6
-			});
-			scenePanelButtonBoxes = btnLayout.boxes.concat(rememberLayout.boxes);
-			drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 11 });
-
-			const sepY = contentTop + btnLayout.totalHeight + 6 + rememberLayout.totalHeight + 8;
-			ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-			ctx.fillRect(12, sepY, w - 24, 1);
-
-			const listTop = sepY + 8;
-			scenePanelListTop = listTop;
-			const itemH = 64;
-			const listBottom = h - 16;
-			const maxVisible = Math.floor((listBottom - listTop) / itemH);
-
-			if (communityThemesCache.length === 0) {
-				ctx.font = '15px -apple-system, BlinkMacSystemFont, sans-serif';
-				ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-				ctx.textAlign = 'center';
-				ctx.fillText('No community themes yet', w / 2, listTop + 40);
-				ctx.fillText('Restyle in Chat \u2192 Theme', w / 2, listTop + 62);
-			} else {
-				for (let i = 0; i < maxVisible && i < communityThemesCache.length; i++) {
-					const th = communityThemesCache[i];
-					const itemY = listTop + i * itemH;
-
-					ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
-					roundRect(ctx, 8, itemY, w - 16, itemH - 4, 8);
-					ctx.fill();
-
-					ctx.textAlign = 'left';
-					ctx.font = '15px -apple-system, BlinkMacSystemFont, sans-serif';
-					ctx.fillStyle = '#ffffff';
-					const nameX = 16;
-					const maxNameW = w - nameX - 80;
-					let dName = th.name;
-					while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
-					if (dName !== th.name) dName += '\u2026';
-					ctx.fillText(dName, nameX, itemY + 22);
-
-					const dateLine = communityDatesMetaText(th, { short: true });
-					if (dateLine) {
-						ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
-						ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
-						let dDate = dateLine;
-						while (ctx.measureText(dDate).width > maxNameW && dDate.length > 3) dDate = dDate.slice(0, -1);
-						if (dDate !== dateLine) dDate += '\u2026';
-						ctx.fillText(dDate, nameX, itemY + 40);
-					}
-
-					const pillW = 60, pillH = itemH - 16, pillX = w - 16 - pillW, pillY = itemY + 8;
-					ctx.fillStyle = 'rgba(16, 185, 129, 0.45)';
-					roundRect(ctx, pillX, pillY, pillW, pillH, 8);
-					ctx.fill();
-					ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, sans-serif';
-					ctx.fillStyle = '#ffffff';
-					ctx.textAlign = 'center';
-					ctx.fillText('Apply', pillX + pillW / 2, pillY + pillH / 2 + 4);
-				}
-			}
-		} else {
-			const btnLayout = buildButtonLayout(COMMUNITY_BUTTONS, {
-				width: w - 24, x: 12, y: contentTop, height: 44, perRow: 2, gap: 8
-			});
-			drawButtonsToCanvas(ctx, btnLayout.boxes, { fontSize: 14 });
-
-			const modeY = contentTop + btnLayout.totalHeight + 8;
-			const modeLayout = buildButtonLayout(communityLoadModeButtons(), {
-				width: w - 24, x: 12, y: modeY, height: 34, perRow: 2, gap: 8
-			});
-			drawButtonsToCanvas(ctx, modeLayout.boxes, { fontSize: 12 });
-			scenePanelButtonBoxes = btnLayout.boxes.concat(modeLayout.boxes);
-
-			const hintY = modeY + modeLayout.totalHeight + 14;
-			ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
-			ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
-			ctx.textAlign = 'center';
-			ctx.fillText('Clear blanks the scene · Layer adds · no duplicate loads', w / 2, hintY);
-
-			const sepY = hintY + 10;
-			ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-			ctx.fillRect(12, sepY, w - 24, 1);
-
-			const listTop = sepY + 8;
-			scenePanelListTop = listTop;
-			const itemH = 64;
-			const listBottom = h - 16;
-			const maxVisible = Math.floor((listBottom - listTop) / itemH);
-
-			if (communityScenesCache.length === 0) {
-				ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
-				ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-				ctx.textAlign = 'center';
-				ctx.fillText('No community scenes yet', w / 2, listTop + 40);
-			} else {
-				for (let i = 0; i < maxVisible && i < communityScenesCache.length; i++) {
-					const cs = communityScenesCache[i];
-					const itemY = listTop + i * itemH;
-					const rowKey = communitySceneKeyFrom(cs);
-					const rowLoaded = rowKey && loadedScenes.some(s => s.communityKey === rowKey && s.active);
-
-					ctx.fillStyle = rowLoaded ? 'rgba(99, 102, 241, 0.22)' : 'rgba(255, 255, 255, 0.03)';
-					roundRect(ctx, 8, itemY, w - 16, itemH - 4, 8);
-					ctx.fill();
-
-					ctx.textAlign = 'left';
-					ctx.font = '15px -apple-system, BlinkMacSystemFont, sans-serif';
-					ctx.fillStyle = '#ffffff';
-					const nameX = 16;
-					const maxNameW = w - nameX - 80;
-					let dName = cs.name;
-					while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
-					if (dName !== cs.name) dName += '\u2026';
-					ctx.fillText(dName, nameX, itemY + 22);
-
-					const dateLine = communityDatesMetaText(cs, { short: true });
-					if (dateLine) {
-						ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
-						ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
-						let dDate = dateLine;
-						while (ctx.measureText(dDate).width > maxNameW && dDate.length > 3) dDate = dDate.slice(0, -1);
-						if (dDate !== dateLine) dDate += '\u2026';
-						ctx.fillText(dDate, nameX, itemY + 40);
-					}
-
-					const pillW = 60, pillH = itemH - 16, pillX = w - 16 - pillW, pillY = itemY + 8;
-					ctx.fillStyle = '#f4f4f8';
-					roundRect(ctx, pillX, pillY, pillW, pillH, 8);
-					ctx.fill();
-					ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, sans-serif';
-					ctx.fillStyle = '#12121a';
-					ctx.textAlign = 'center';
-					ctx.fillText('Load', pillX + pillW / 2, pillY + pillH / 2 + 4);
-				}
-			}
-		}
-	}
-
-	ctx.textAlign = 'left';
-	sceneTexture.needsUpdate = true;
-}
-
-function loadSceneThumbnails() {
-	for (const sc of loadedScenes) {
-		if (sc.thumbnail && !sc._thumbImage) {
-			const img = new Image();
-			img.onload = () => { sc._thumbImage = img; renderScenePanel(); };
-			img.src = sc.thumbnail;
-		}
-	}
-}
-
-function handleScenePanelHit(uv) {
-	const canvasW = sceneCanvas?.width || 384;
-	const canvasH = sceneCanvas?.height || 768;
-	const canvasX = uv.x * canvasW;
-	const canvasY = (1 - uv.y) * canvasH;
-
-	const subTabHit = hitTestButtons(scenePanelSubTabBoxes, canvasX, canvasY);
-	if (subTabHit) {
-		handleMenuAction(subTabHit.action);
-		return;
-	}
-
-	const nestedHit = hitTestButtons(scenePanelNestedTabBoxes, canvasX, canvasY);
-	if (nestedHit) {
-		handleMenuAction(nestedHit.action);
-		return;
-	}
-
-	const btnHit = hitTestButtons(scenePanelButtonBoxes, canvasX, canvasY);
-	if (btnHit) {
-		handleMenuAction(btnHit.action);
-		return;
-	}
-
-	if (scenePanelSubTab === 'scenes') {
-		const listTop = scenePanelListTop, itemH = 72, listBottom = 688;
-		const maxVisible = Math.floor((listBottom - listTop) / itemH);
-		if (canvasY >= listTop && canvasY < listTop + maxVisible * itemH) {
-			const idx = Math.floor((canvasY - listTop) / itemH) + sceneScrollOffset;
-			if (idx >= 0 && idx < loadedScenes.length) {
-				if (canvasX >= canvasW - 36) {
-					loadedScenes.splice(idx, 1);
-					rebuildSceneFromActive();
-					renderScenePanel();
-					notifyCodeEditorExternalChange();
-				} else if (canvasX < 48) {
-					loadedScenes[idx].active = !loadedScenes[idx].active;
-					rebuildSceneFromActive();
-					renderScenePanel();
-					notifyCodeEditorExternalChange();
-				}
-			}
-			return;
-		}
-		const combHit = hitTestButtons(buildButtonLayout(EXPORT_COMBINED_BUTTON, {
-			width: canvasW - 24, x: 12, y: 700, height: 48, perRow: 1
-		}).boxes, canvasX, canvasY);
-		if (combHit) handleMenuAction(combHit.action);
-	} else if (scenePanelSubTab === 'files') {
-		const listTop = scenePanelListTop, itemH = 56;
-		const idx = Math.floor((canvasY - listTop) / itemH) + filesScrollOffset;
-		if (canvasY >= listTop && idx >= 0 && idx < contextLibrary.length) {
-			// Remove pill is on the right
-			if (canvasX >= canvasW - 16 - 64) {
-				removeLibraryFile(contextLibrary[idx].id);
-			}
-		}
-	} else if (scenePanelSubTab === 'code') {
-		// Code body is view/edit via keyboard; taps on list area are no-ops
-	} else if (scenePanelSubTab === 'community') {
-		const listTop = scenePanelListTop, itemH = 64;
-		const idx = Math.floor((canvasY - listTop) / itemH);
-		if (canvasY < listTop || idx < 0) return;
-		if (communitySection === 'themes') {
-			if (idx < communityThemesCache.length) applyCommunityTheme(communityThemesCache[idx]);
-		} else if (idx < communityScenesCache.length) {
-			loadCommunityScene(communityScenesCache[idx]).catch(() => {});
-		}
-	}
-}
-
-function handleChatPanelHit(uv) {
-	const canvasX = uv.x * 1024;
-	const canvasY = (1 - uv.y) * (chatCanvas?.height || 768);
-	const rememberHit = hitTestButtons(chatThemeRememberBoxes, canvasX, canvasY);
-	if (rememberHit) {
-		handleMenuAction(rememberHit.action);
-		return;
-	}
-	const subHit = hitTestButtons(chatPanelSubTabBoxes, canvasX, canvasY);
-	if (subHit) handleMenuAction(subHit.action);
-}
-
-function deepestDesktopChatElement(x, y) {
-	if (!desktopChat) return null;
-	// Same answer as before (smallest visible box under the point, later
-	// nodes win ties) but checks the cheap box first and only reads computed
-	// style for boxes that contain the point, and skips the inside of any
-	// overflow-clipping box the point is not in (scrolled-away code lines).
-	let best = null;
-	let bestArea = Infinity;
-	const visit = (el) => {
-		for (const child of el.children) {
-			const r = child.getBoundingClientRect();
-			const inside = r.width > 0 && r.height > 0 && x >= r.left && y >= r.top && x <= r.right && y <= r.bottom;
-			let style = null;
-			if (inside) {
-				style = getComputedStyle(child);
-				if (style.display !== 'none' && style.visibility !== 'hidden') {
-					const area = r.width * r.height;
-					if (area <= bestArea) {
-						best = child;
-						bestArea = area;
-					}
-				}
-			}
-			if (child.children.length === 0) continue;
-			if (!inside && r.width > 0 && r.height > 0) {
-				style = style || getComputedStyle(child);
-				const ox = style.overflowX, oy = style.overflowY;
-				if (ox !== 'visible' && oy !== 'visible') continue;
-			}
-			visit(child);
-		}
-	};
-	visit(desktopChat);
-	return best;
-}
-
-function isHtmlTextField(el) {
-	if (!el) return false;
-	if (el instanceof HTMLTextAreaElement) return true;
-	if (el instanceof HTMLInputElement) {
-		const skip = ['button', 'submit', 'reset', 'checkbox', 'radio', 'range', 'file', 'color', 'image', 'hidden'];
-		return !skip.includes(el.type);
-	}
-	return false;
-}
-
-// Ray hit on the mirrored desktop menu: the mesh is a snapshot, so the click
-// is forwarded to the same #desktop-chat node that was painted.
-function forwardHtmlInCanvasClick(uv) {
-	if (!desktopChat) return;
-	const rect = desktopChat.getBoundingClientRect();
-	if (rect.width < 2 || rect.height < 2) return;
-	const x = rect.left + uv.x * rect.width;
-	const y = rect.top + (1 - uv.y) * rect.height;
-	const el = deepestDesktopChatElement(x, y);
-	if (!el) return;
-	// Minimizing would display:none the source and blank the mirror, with no
-	// in-world control to bring it back (the reopen button is outside the element).
-	if (el.closest('#desktop-chat-minimize')) return;
-
-	const label = el.closest('label');
-	let field = el.closest('input, textarea, select');
-	if (!field && label) field = label.control || label.querySelector('input, textarea, select');
-	if (field instanceof HTMLSelectElement && field.options.length > 0) {
-		field.selectedIndex = (field.selectedIndex + 1) % field.options.length;
-		field.dispatchEvent(new Event('change', { bubbles: true }));
-	} else if (field instanceof HTMLInputElement && field.type === 'range') {
-		const r = field.getBoundingClientRect();
-		const t = r.width > 0 ? Math.min(1, Math.max(0, (x - r.left) / r.width)) : 0;
-		const min = Number(field.min || 0);
-		const max = Number(field.max || 100);
-		field.value = String(min + t * (max - min));
-		field.dispatchEvent(new Event('input', { bubbles: true }));
-	} else if (field instanceof HTMLInputElement && (field.type === 'checkbox' || field.type === 'radio')) {
-		if (field.type === 'radio') field.checked = true;
-		else field.checked = !field.checked;
-		field.dispatchEvent(new Event('input', { bubbles: true }));
-		field.dispatchEvent(new Event('change', { bubbles: true }));
-	} else if (isHtmlTextField(field)) {
-		htmlKeyboardForDom = true;
-		keyboardCollapsed = false;
-		try { field.focus({ preventScroll: true }); } catch { field.focus(); }
-		applyXrPanelVisibility(xrSessionActive());
-		layoutHtmlInCanvasPanel();
-	} else {
-		const actionEl = el.closest('button, a, label, [data-action], [role="button"]') || el;
-		if (!isHtmlTextField(document.activeElement) || !desktopChat.contains(document.activeElement)) {
-			htmlKeyboardForDom = false;
-		}
-		actionEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-		applyXrPanelVisibility(xrSessionActive());
-		layoutHtmlInCanvasPanel();
-	}
-	tickHtmlInCanvas(true);
-}
 
 // ============================================================================
 // XR Controller Input & Raycasting
@@ -5116,13 +3368,14 @@ function createControllerRay() {
 function createReticle() {
 	const geometry = new THREE.RingGeometry(0.005, 0.012, 24);
 	const material = new THREE.MeshBasicMaterial({
-		color: 0x6366f1,
+		color: 0xfacc15, // amber, matching the .gs-ray-hover ring on VR windows
 		transparent: true,
-		opacity: 0.8,
+		opacity: 0.95,
 		side: THREE.DoubleSide,
 		depthTest: false
 	});
 	const ring = new THREE.Mesh(geometry, material);
+	ring.name = 'vrRayReticle';
 	ring.visible = false;
 	ring.renderOrder = MENU_RETICLE_RENDER_ORDER;
 	scene.add(ring);
@@ -5140,6 +3393,8 @@ function setupXRControllers() {
 		const controller = renderer.xr.getController(i);
 		controller.addEventListener('selectstart', onXRSelectStart);
 		controller.addEventListener('selectend', onXRSelectEnd);
+		controller.addEventListener('connected', (e) => { controller.userData.handedness = e.data && e.data.handedness; });
+		controller.addEventListener('disconnected', () => { controller.userData.handedness = null; });
 
 		// Attach ray line to controller
 		const ray = createControllerRay();
@@ -5149,14 +3404,27 @@ function setupXRControllers() {
 		// Create a reticle for hit feedback
 		reticles.push(createReticle());
 
-		// Controllers ride under viewOffset (with the camera) so lay-down pitch
-		// remaps hands with the headset; player still owns locomotion yaw/move.
+		// Controllers ride under viewOffset with the camera; player owns
+		// locomotion yaw/move.
 		viewOffset.add(controller);
 	}
 }
 
-const htmlScrollDrag = [null, null];
-const HTML_SCROLL_DRAG_PX = 8;
+// The VR "Lay down" view was removed. Its state only ever lived in memory, but
+// clear anything an older build or a test may have stored under a lay-down key
+// and make sure the view rig is upright, so every session loads in the normal
+// (sitting/standing) view.
+function migrateLayDownState() {
+	try {
+		const stale = [];
+		for (let i = 0; i < localStorage.length; i++) {
+			const key = localStorage.key(i);
+			if (key && /lay[\s_.-]?down/i.test(key)) stale.push(key);
+		}
+		for (const key of stale) localStorage.removeItem(key);
+	} catch { /* storage blocked */ }
+	if (viewOffset) viewOffset.rotation.set(0, 0, 0);
+}
 
 function xrControllerIndex(controller) {
 	for (let i = 0; i < 2; i++) {
@@ -5165,89 +3433,8 @@ function xrControllerIndex(controller) {
 	return -1;
 }
 
-function desktopChatPointFromUV(uv) {
-	if (!desktopChat || !uv) return null;
-	const rect = desktopChat.getBoundingClientRect();
-	if (rect.width < 2 || rect.height < 2) return null;
-	return {
-		x: rect.left + uv.x * rect.width,
-		y: rect.top + (1 - uv.y) * rect.height,
-		localX: uv.x * rect.width,
-		localY: (1 - uv.y) * rect.height
-	};
-}
-
-// Nearest ancestor (including the hit node) that can actually scroll.
-function scrollableDesktopAncestor(el) {
-	let node = el;
-	while (node && desktopChat && desktopChat.contains(node)) {
-		if (node instanceof Element) {
-			const style = getComputedStyle(node);
-			const oy = style.overflowY;
-			const ox = style.overflowX;
-			const canY = (oy === 'auto' || oy === 'scroll' || oy === 'overlay') && node.scrollHeight > node.clientHeight + 1;
-			const canX = (ox === 'auto' || ox === 'scroll' || ox === 'overlay') && node.scrollWidth > node.clientWidth + 1;
-			if (canY || canX) return { el: node, canX, canY };
-		}
-		if (node === desktopChat) break;
-		node = node.parentElement;
-	}
-	return null;
-}
-
-// Trigger press on a scrollable part of the mirrored menu. Returns false when
-// the point is not a scroller, so the caller clicks immediately instead.
-function beginHtmlInCanvasScrollDrag(controllerIndex, uv) {
-	const point = desktopChatPointFromUV(uv);
-	if (!point) return false;
-	const el = deepestDesktopChatElement(point.x, point.y);
-	if (!el || el.closest('#desktop-chat-minimize')) return false;
-	const scroll = scrollableDesktopAncestor(el);
-	if (!scroll) return false;
-	htmlScrollDrag[controllerIndex] = {
-		uv: { x: uv.x, y: uv.y },
-		scroller: scroll.el,
-		canX: scroll.canX,
-		canY: scroll.canY,
-		startLocalX: point.localX,
-		startLocalY: point.localY,
-		originScrollLeft: scroll.el.scrollLeft,
-		originScrollTop: scroll.el.scrollTop,
-		moved: false
-	};
-	return true;
-}
-
-function moveHtmlInCanvasScrollDrag(controllerIndex, uv) {
-	const drag = htmlScrollDrag[controllerIndex];
-	if (!drag || !drag.scroller || !drag.scroller.isConnected) {
-		htmlScrollDrag[controllerIndex] = null;
-		return;
-	}
-	const point = desktopChatPointFromUV(uv);
-	if (!point) return;
-	const dx = point.localX - drag.startLocalX;
-	const dy = point.localY - drag.startLocalY;
-	if (!drag.moved && (Math.abs(dx) > HTML_SCROLL_DRAG_PX || Math.abs(dy) > HTML_SCROLL_DRAG_PX)) {
-		drag.moved = true;
-	}
-	if (!drag.moved) return;
-	// Grab the content: pointer motion moves the scrolled content with it.
-	if (drag.canY) drag.scroller.scrollTop = drag.originScrollTop - dy;
-	if (drag.canX) drag.scroller.scrollLeft = drag.originScrollLeft - dx;
-	// Painted by the frame loop at most every HTML_PAINT_MIN_MS (was a full
-	// synchronous repaint on every frame of the drag).
-	markHtmlInCanvasDirty();
-}
-
-function endHtmlInCanvasScrollDrag(controllerIndex) {
-	const drag = htmlScrollDrag[controllerIndex];
-	if (!drag) return;
-	htmlScrollDrag[controllerIndex] = null;
-	if (!drag.moved) forwardHtmlInCanvasClick(drag.uv);
-	else tickHtmlInCanvas(true);
-}
-
+// Trigger released: finish a canvas-surface press, or a VR window drag (a
+// press that did not move clicks where it started, see vrWindows.js).
 function onXRSelectEnd(event) {
 	const idx = xrControllerIndex(event.target);
 	if (idx >= 0 && _surfacePressed[idx]) {
@@ -5258,136 +3445,52 @@ function onXRSelectEnd(event) {
 		else dispatchSurfacePointer(surface, { x: 0.5, y: 0.5 }, 'cancel', { pointerId: 10 + idx });
 		return;
 	}
-	if (idx >= 0) endHtmlInCanvasScrollDrag(idx);
+	if (idx >= 0 && vrWindows) for (const w of vrWindows.windows) w.endDrag(idx);
 }
 
+// Trigger pressed: a canvas surface the frame loop found in front of any
+// window, else the VR window under the ray. On a scroller it starts a drag;
+// anything else is clicked like a mouse click on the real element.
 function onXRSelectStart(event) {
 	const controller = event.target;
-	// Trigger on a canvas surface the frame loop found in front of any window.
-	const sIdx = xrControllerIndex(controller);
-	if (sIdx >= 0 && _surfaceHover[sIdx]) {
-		const { surface, uv } = _surfaceHover[sIdx];
-		_surfacePressed[sIdx] = surface;
-		dispatchSurfacePointer(surface, uv, 'down', { pointerId: 10 + sIdx, pressed: true });
+	const idx = xrControllerIndex(controller);
+	if (idx >= 0 && _surfaceHover[idx]) {
+		const { surface, uv } = _surfaceHover[idx];
+		_surfacePressed[idx] = surface;
+		dispatchSurfacePointer(surface, uv, 'down', { pointerId: 10 + idx, pressed: true });
 		return;
 	}
+	if (!vrWindows) return;
 
 	tempMatrix.identity().extractRotation(controller.matrixWorld);
 	raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
 	raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
-
-	// UI collapse toggle — head-locked, always available (even when collapsed).
-	if (uiTogglePanel) {
-		const tHits = raycaster.intersectObject(uiTogglePanel);
-		if (tHits.length > 0) {
-			toggleUi();
-			return;
-		}
-	}
-	// When collapsed, the panels are hidden — nothing else is interactable.
-	if (uiCollapsed) return;
-
-	// Chat center panel (Scene|Theme subtabs)
-	if (htmlInCanvasPanel && htmlInCanvasPanel.visible) {
-		const htmlHits = raycaster.intersectObject(htmlInCanvasPanel);
-		if (htmlHits.length > 0 && htmlHits[0].uv) {
-			// Scrollable regions drag with the trigger held. A press that doesn't
-			// move still clicks through forwardHtmlInCanvasClick on selectend.
-			// Anything else (buttons, fields, scroll controls) clicks immediately.
-			const idx = xrControllerIndex(controller);
-			if (idx >= 0 && beginHtmlInCanvasScrollDrag(idx, htmlHits[0].uv)) return;
-			forwardHtmlInCanvasClick(htmlHits[0].uv);
-			return;
-		}
-	}
-
-	if (chatPanel && chatPanel.visible) {
-		const chatHits = raycaster.intersectObject(chatPanel);
-		if (chatHits.length > 0 && chatHits[0].uv) {
-			handleChatPanelHit(chatHits[0].uv);
-			return;
-		}
-	}
-
-	// Check scene manager panel hit
-	if (scenePanel && scenePanel.visible) {
-		const sceneHits = raycaster.intersectObject(scenePanel);
-		if (sceneHits.length > 0 && sceneHits[0].uv) {
-			handleScenePanelHit(sceneHits[0].uv);
-			return;
-		}
-	}
-
-	// Check side panel hit first (toggle + color wheel)
-	if (sidePanel && sidePanel.visible) {
-		const sideHits = raycaster.intersectObject(sidePanel);
-		if (sideHits.length > 0 && sideHits[0].uv) {
-			handleSidePanelHit(sideHits[0].uv);
-			return;
-		}
-	}
-
-	// Check input panel hit: [input area][MIC][KEYS][Send]
-	if (inputPanel && inputPanel.visible) {
-		const intersects = raycaster.intersectObject(inputPanel);
-		if (intersects.length > 0 && intersects[0].uv) {
-			const L = inputPanelLayout();
-			const cx = intersects[0].uv.x * L.W;
-			if (cx >= L.sendX) {
-				handleXRSend();
-			} else if (cx >= L.kbdX && cx < L.kbdX + L.kbdW) {
-				toggleKeyboard();
-			} else if (cx >= L.micX && cx < L.micX + L.micW) {
-				toggleMicAlwaysOn();
-			}
-			// The input area itself is a no-op in XR: text comes from the in-scene
-			// keyboard or the mic, never from focusing the crash-prone DOM input.
-			return;
-		}
-	}
-
-	// Check virtual keyboard hit (only when it's showing)
-	if (keyboardPanel && keyboardPanel.visible && !keyboardCollapsed) {
-		const kbHits = raycaster.intersectObject(keyboardPanel);
-		if (kbHits.length > 0 && kbHits[0].uv) {
-			handleKeyboardHit(kbHits[0].uv);
-			return;
-		}
-	}
+	const hits = raycaster.intersectObjects(visibleVrWindowMeshes(_selectTargets), false);
+	const hit = hits.find((h) => h.uv);
+	if (!hit) return;
+	const win = vrWindows.byMesh(hit.object);
+	if (!win) return;
+	if (idx >= 0 && win.beginDrag(idx, hit.uv)) return;
+	win.click(hit.uv);
 }
+const _selectTargets = [];
 
-function handleXRSend() {
-	// When the Code left-panel is active, Enter on the XR keyboard inserts a
-	// newline into the code buffer instead of sending chat (see dispatchKey).
-	if (scenePanelSubTab === 'code') return;
-
-	if (chatSection === 'theme') {
-		const message = inputText.trim();
-		if (!message && pendingThemeAttachments.length === 0) return;
-		if (dchatThemeChatInput) dchatThemeChatInput.value = message;
-		inputText = '';
-		if (chatInput) chatInput.value = '';
-		renderInputToCanvas();
-		sendThemeChat().then(() => renderChatToCanvas());
-		return;
+// Meshes of the VR windows that are actually on screen (Raycaster does not
+// check visibility, and the HUD's parent group is hidden outside XR).
+function visibleVrWindowMeshes(out) {
+	out.length = 0;
+	if (!vrWindows) return out;
+	for (const w of vrWindows.windows) {
+		let shown = true;
+		for (let o = w.mesh; o; o = o.parent) {
+			if (!o.visible) { shown = false; break; }
+		}
+		if (shown) out.push(w.mesh);
 	}
-
-	const message = inputText.trim();
-	if (message || pendingAttachments.length > 0) {
-		sendMessage(message);
-		chatInput.value = '';
-		inputText = '';
-		renderInputToCanvas();
-	}
+	return out;
 }
 
 setupXRControllers();
-
-// Sync DOM input to 3D input panel
-chatInput.addEventListener('input', () => {
-	inputText = chatInput.value;
-	renderInputToCanvas();
-});
 
 // ============================================================================
 // VR Code Execution Engine
@@ -5709,13 +3812,13 @@ function reanchorStrayObjects() {
 		if (child === hud) continue;
 		worldParent.attach(child); // keep world transform; AR uses placement root
 	}
-	// UI panels never legitimately have child meshes, so anything parented to one
-	// is a stray object that would ride along with the window — re-anchor it.
-	const panels = [chatPanel, inputPanel, keyboardPanel, sidePanel, scenePanel];
-	for (const panel of panels) {
-		if (!panel) continue;
-		for (let i = panel.children.length - 1; i >= 0; i--) {
-			worldParent.attach(panel.children[i]);
+	// VR windows never legitimately have child meshes, so anything parented to
+	// one is a stray object that would ride along with the window — re-anchor it.
+	if (vrWindows) {
+		for (const w of vrWindows.windows) {
+			for (let i = w.mesh.children.length - 1; i >= 0; i--) {
+				worldParent.attach(w.mesh.children[i]);
+			}
 		}
 	}
 	// While Walk-in-AR is active, also pull newly added scene-root content into
@@ -5734,7 +3837,7 @@ async function attemptAutoFix(failingCode, errorMessage, errorStack, blockKey) {
 
 	for (let attempt = 1; attempt <= MAX_FIX_ATTEMPTS; attempt++) {
 		updateStatus(`Fixing code (attempt ${attempt}/${MAX_FIX_ATTEMPTS})...`, '');
-		renderChatToCanvas();
+		renderDomChat();
 
 		const thisFailingCode = attempt === 1 ? failingCode : priorFixes[priorFixes.length - 1].code;
 
@@ -6106,7 +4209,7 @@ async function clearContextLibrary() {
 }
 
 function renderContextFilesList() {
-	if (scenePanelSubTab === 'files') renderScenePanel();
+	if (scenePanelSubTab === 'files') renderDomSceneList();
 	if (!dchatFilesList) return;
 	dchatFilesList.innerHTML = '';
 	if (!contextLibrary.length) {
@@ -6312,7 +4415,6 @@ async function sendMessage(userMessage) {
 		role: 'user',
 		content: userMessage + (attachments.length > 0 ? `\n\n📎 ${attachments.map(a => a.name).join(', ')}` : '')
 	});
-	chatScrollOffset = 0; // auto-scroll to bottom on new message
 
 	// Set loading state BEFORE rendering so the model-aware thinking indicator
 	// is drawn immediately — otherwise it only appears on the next render (which
@@ -6320,7 +4422,7 @@ async function sendMessage(userMessage) {
 	isLoading = true;
 	sendButton.disabled = true;
 	updateStatus('Sending...', '');
-	renderChatToCanvas();
+	renderDomChat();
 
 	try {
 		let data;
@@ -6384,8 +4486,7 @@ async function sendMessage(userMessage) {
 						role: 'assistant',
 						content: `[Code error: ${execErr.message} — auto-fixing...]`
 					});
-					chatScrollOffset = 0;
-					renderChatToCanvas();
+					renderDomChat();
 
 					// Attempt auto-fix
 					const fix = await attemptAutoFix(code, execErr.message, execErr.stack, blockKey);
@@ -6428,8 +4529,7 @@ async function sendMessage(userMessage) {
 	} finally {
 		isLoading = false;
 		sendButton.disabled = false;
-		chatScrollOffset = 0; // auto-scroll to bottom on response
-		renderChatToCanvas();
+		renderDomChat();
 	}
 }
 
@@ -6455,13 +4555,11 @@ GSContext.initCreationContext({
 			messages.push(...apiMsgs);
 		}
 		displayMessages.push(...displayMsgs);
-		chatScrollOffset = 0;
-		renderChatToCanvas();
+		renderDomChat();
 	},
 	pushChatNote: (text) => {
 		displayMessages.push({ role: 'assistant', content: text, history: true, historyMarker: true });
-		chatScrollOffset = 0;
-		renderChatToCanvas();
+		renderDomChat();
 	},
 	updateStatus: (t, c) => updateStatus(t, c),
 	isXrActive: () => xrSessionActive() || !!mobileXRMode,
@@ -6497,8 +4595,8 @@ GSMerge.initCommunityMerge({
 	parseVrExecBlocks: (text) => parseVrExecBlocks(text),
 	callChat: async (apiMessages) => {
 		isLoading = true;
-		renderChatToCanvas();
-		try { return await callSceneChatBackend(apiMessages); } finally { isLoading = false; renderChatToCanvas(); }
+		renderDomChat();
+		try { return await callSceneChatBackend(apiMessages); } finally { isLoading = false; renderDomChat(); }
 	},
 	// New working scene; neither original is touched. Failing blocks go
 	// through the normal auto-fix (asset tokens keep base64 out of the fix call).
@@ -6540,16 +4638,14 @@ GSMerge.initCommunityMerge({
 				}
 			}
 		}
-		loadSceneThumbnails();
-		renderScenePanel();
+		renderDomSceneList();
 		notifyCodeEditorExternalChange();
 		return { sceneId: sc.id, fixed, failed };
 	},
 	appendChat: (apiMsgs, displayMsgs) => {
 		messages.push(...apiMsgs);
 		displayMessages.push(...displayMsgs);
-		chatScrollOffset = 0;
-		renderChatToCanvas();
+		renderDomChat();
 	},
 	recordMerge: (info) => {
 		GSContext.recordUserTurn({ text: info.userText, backend: selectedBackend, model: getActiveModelDisplayName() });
@@ -6569,71 +4665,8 @@ function updateStatus(text, className) {
 	}
 }
 
-// ============================================================================
-// Head-locked HUD status badge — not drawn.
-// updateStatus() still records text on the hidden DOM #status element.
-// ============================================================================
-function createHudStatus() {
-	// Intentionally does not add a mesh to `hud`.
-}
-
-function updateHudStatus() {
-	if (hudStatusPanel) hudStatusPanel.visible = false;
-}
-
-// ============================================================================
-// Collapse-all-UI toggle (head-locked button, works even when the UI is hidden)
-// ============================================================================
-function createUiToggle() {
-	uiToggleCanvas = document.createElement('canvas');
-	uiToggleCanvas.width = 384;
-	uiToggleCanvas.height = 128;
-	uiToggleContext = uiToggleCanvas.getContext('2d');
-
-	uiToggleTexture = new THREE.CanvasTexture(uiToggleCanvas);
-	uiToggleTexture.minFilter = THREE.LinearFilter;
-	uiToggleTexture.magFilter = THREE.LinearFilter;
-
-	const geo = new THREE.PlaneGeometry(0.14, 0.047);
-	const mat = new THREE.MeshBasicMaterial({
-		map: uiToggleTexture,
-		transparent: true,
-		depthTest: false,  // always drawn on top so it's reachable over any scene
-		depthWrite: false
-	});
-	uiTogglePanel = new THREE.Mesh(geo, mat);
-	// Head-locked, upper-right — always in reach even when the panels are hidden.
-	uiTogglePanel.position.set(0.34, 0.2, -0.85);
-	uiTogglePanel.renderOrder = 999;
-	hud.add(uiTogglePanel);
-
-	renderUiToggle();
-}
-
-function renderUiToggle() {
-	if (!uiToggleContext) return;
-	const ctx = uiToggleContext;
-	const W = uiToggleCanvas.width;
-	const H = uiToggleCanvas.height;
-
-	ctx.clearRect(0, 0, W, H);
-	ctx.fillStyle = uiCollapsed ? '#6366f1' : 'rgba(30, 30, 40, 0.9)';
-	roundRect(ctx, 0, 0, W, H, 28);
-	ctx.fill();
-
-	ctx.fillStyle = '#ffffff';
-	ctx.font = 'bold 44px -apple-system, BlinkMacSystemFont, sans-serif';
-	ctx.textAlign = 'center';
-	ctx.textBaseline = 'middle';
-	ctx.fillText(uiCollapsed ? 'Show UI' : 'Hide UI', W / 2, H / 2 + 2);
-	ctx.textAlign = 'left';
-	ctx.textBaseline = 'alphabetic';
-
-	uiToggleTexture.needsUpdate = true;
-}
-
-// Hide/show every main panel (3D) and the DOM chat overlay (windowed view). The
-// head-locked toggle button stays visible so the UI can always be brought back.
+// Hide/show the VR menu (headset) or the menu window (windowed view). The
+// head-locked Hide/Show UI window stays so the UI can always be brought back.
 function setUiCollapsed(collapsed) {
 	if (displayOnlyMode) collapsed = true;
 	uiCollapsed = collapsed;
@@ -6644,7 +4677,6 @@ function setUiCollapsed(collapsed) {
 		setDesktopChatMinimized(collapsed);
 	}
 
-	renderUiToggle();
 	updateUiToggleDOM();
 	updateStatus(collapsed ? 'UI hidden' : '', '');
 }
@@ -6654,15 +4686,21 @@ function toggleUi() {
 }
 
 function updateUiToggleDOM() {
+	const label = uiCollapsed ? 'Show UI' : 'Hide UI';
 	const btn = document.getElementById('ui-toggle');
-	if (btn) btn.textContent = uiCollapsed ? 'Show UI' : 'Hide UI';
+	if (btn) btn.textContent = label;
+	const vrBtn = document.getElementById('gs-vr-hud-toggle');
+	if (vrBtn) {
+		vrBtn.textContent = label;
+		vrBtn.setAttribute('aria-pressed', uiCollapsed ? 'true' : 'false');
+	}
 }
 
 // ============================================================================
 // Locomotion (left thumbstick = move, right thumbstick = turn)
 // ============================================================================
 // Modes cycle Off → Planar → Free-roam:
-//   • off    — thumbsticks scroll the canvas chat / scene list (not the HTML-in-canvas mirror).
+//   • off    — thumbsticks scroll whatever VR window content is under that hand's ray.
 //   • planar — left stick moves on the horizontal plane (in/out + strafe)
 //              relative to camera yaw; no vertical from the left stick.
 //   • free   — left stick uses the same level yaw translation; vertical
@@ -7395,7 +5433,7 @@ window.gsSessionCode = {
 		await executeVrCode(code, sessionBlockKey(executedCodeBlocks.length));
 		executedCodeBlocks.push(code);
 		notifyCodeEditorExternalChange();
-		renderScenePanel();
+		renderDomSceneList();
 	},
 	removeWhere(match) {
 		let removed = 0;
@@ -7420,7 +5458,7 @@ window.gsSessionCode = {
 			if (!sc.active || !Array.isArray(sc.codeBlocks)) continue;
 			sc.codeBlocks = keep(sc.codeBlocks, (i) => sceneBlockKey(sc, i));
 		}
-		if (removed) { notifyCodeEditorExternalChange(); renderScenePanel(); }
+		if (removed) { notifyCodeEditorExternalChange(); renderDomSceneList(); }
 		return removed;
 	}
 };
@@ -7927,7 +5965,7 @@ function setDesktopChatMinimized(minimized) {
 
 function saveDesktopChatSize() {
 	if (desktopChat.classList.contains('expanded')) return;
-	// Off-screen while mirrored into VR; don't persist the parked rect.
+	// Off-screen while painted into VR; don't persist the parked rect.
 	if (desktopChat.classList.contains('html-in-canvas-source')) return;
 	try {
 		const rect = desktopChat.getBoundingClientRect();
@@ -8894,7 +6932,7 @@ if (dchatCodeEditor && dchatCodeHighlight) {
 }
 
 // Environment tab: VR mode (shared button spec, see ENV_MODE_BUTTONS/
-// handleMenuAction), color picker, brightness slider. The toggle buttons
+// handleMenuAction), color picker, hue/saturation/brightness sliders. The toggle buttons
 // themselves are (re)mounted by renderDomEnv() since their active/inactive
 // styling depends on isVRMode.
 dchatColorPicker.addEventListener('input', () => {
@@ -8906,12 +6944,22 @@ dchatColorPicker.addEventListener('input', () => {
 	vrBgSat = hsl.s;
 	vrBgLight = hsl.l;
 	applyEnvironmentMode();
-	renderSidePanel();
+	renderDomEnv();
 });
 dchatBrightness.addEventListener('input', () => {
 	vrBgLight = Math.max(0.02, Math.min(0.95, Number(dchatBrightness.value) / 100));
 	applyEnvironmentMode();
-	renderSidePanel();
+	renderDomEnv();
+});
+if (dchatHue) dchatHue.addEventListener('input', () => {
+	vrBgHue = Math.max(0, Math.min(360, Number(dchatHue.value)));
+	applyEnvironmentMode();
+	renderDomEnv();
+});
+if (dchatSaturation) dchatSaturation.addEventListener('input', () => {
+	vrBgSat = Math.max(0, Math.min(1, Number(dchatSaturation.value) / 100));
+	applyEnvironmentMode();
+	renderDomEnv();
 });
 dchatResetCameraBtn.addEventListener('click', resetCameraView);
 
@@ -8919,7 +6967,7 @@ dchatResetCameraBtn.addEventListener('click', resetCameraView);
 // EXPORT_COMBINED_BUTTON, COMMUNITY_BUTTONS) mounted once - their content
 // never changes, only EXPORT_COMBINED_BUTTON's visibility does (toggled in
 // renderDomSceneList via the .visible class on its mount div).
-mountButtonsToDOM(dchatScenesButtonsMount, SCENES_BUTTONS_DOM, { width: 384, height: phoneMenuButtonHeight(44, 384), gap: 8, minWidth: 100, fontSize: 12 }, handleMenuAction);
+mountButtonsToDOM(dchatScenesButtonsMount, SCENES_BUTTONS, { width: 384, height: phoneMenuButtonHeight(44, 384), gap: 8, minWidth: 100, fontSize: 12 }, handleMenuAction);
 mountButtonsToDOM(dchatExportCombinedMount, EXPORT_COMBINED_BUTTON, { width: 384, height: phoneMenuButtonHeight(44, 384), gap: 8, perRow: 1, fontSize: 13 }, handleMenuAction);
 renderCommunityDesktopButtons();
 renderCommunityLoadModeControls();
@@ -8927,46 +6975,31 @@ if (dchatThemesButtonsMount) {
 	mountButtonsToDOM(dchatThemesButtonsMount, THEME_BUTTONS, { width: 384, height: phoneMenuButtonHeight(44, 384), gap: 8, perRow: 3, fontSize: 11 }, handleMenuAction);
 }
 
-// Switches between the desktop chat window (windowed browser) and the slim
-// dom-overlay bar (VR immersive session), and shows/hides the legacy 3D
-// canvas panels accordingly — the desktop window replaces them entirely.
 function xrSessionActive() {
 	return !!(renderer && renderer.xr && renderer.xr.isPresenting);
 }
 
-// One place for XR panel visibility so the HTML-in-canvas toggle and Hide UI
-// cannot disagree. Desktop (not presenting) is unchanged: canvas panels stay
-// hidden and #desktop-chat stays the on-screen menu.
+// One place for VR window visibility so Hide UI, display-only shares and the
+// keyboard cannot disagree. In a headset the menu is #desktop-chat painted
+// into the world (vrWindows.js); outside XR it is the on-screen window.
 function applyXrPanelVisibility(immersive = xrSessionActive()) {
 	const show = immersive && !uiCollapsed && !displayOnlyMode;
-	const html = show && htmlInCanvas;
-	if (chatPanel) chatPanel.visible = show && !html;
-	if (inputPanel) inputPanel.visible = show && !html;
-	if (scenePanel) scenePanel.visible = show && !html;
-	// Side panel is the VR menu that hosts the HTML-in-canvas toggle.
-	if (sidePanel) sidePanel.visible = show;
-	if (keyboardPanel) {
-		const kb = show && !keyboardCollapsed && (!html || htmlKeyboardForDom);
-		keyboardPanel.visible = kb;
-	}
-	if (htmlInCanvasPanel) htmlInCanvasPanel.visible = html;
+	if (vrMainWindow) vrMainWindow.setVisible(show);
+	if (vrKeyboardWindow) vrKeyboardWindow.setVisible(show && vrKeyboardOpen);
+	if (vrHudWindow) vrHudWindow.setVisible(immersive && !displayOnlyMode);
+	if (!immersive && vrKeyboardOpen) closeVrKeyboard({ apply: false });
 
 	if (desktopChat) {
-		desktopChat.classList.toggle('html-in-canvas-source', html);
-		const hideDom = displayOnlyMode || (immersive ? !html : uiCollapsed);
+		const hideDom = displayOnlyMode || (immersive ? !show : uiCollapsed);
 		desktopChat.classList.toggle('hidden', hideDom);
 	}
-	if (chatOverlayBar) {
-		chatOverlayBar.style.display = '';
-		// Slim dom-overlay bar is the fallback text field. Hide it while the
-		// full desktop element is mirrored in-world so it doesn't cover the view.
-		chatOverlayBar.classList.toggle('visible', immersive && !displayOnlyMode && !uiCollapsed && !html);
-	}
+	// The slim dom-overlay bar is never used: the menu window has the chat field.
+	if (chatOverlayBar) chatOverlayBar.classList.remove('visible');
 }
 
 function setImmersiveUiMode(immersive) {
-	// The head-locked hud (Hide/Show-UI panel) only makes sense with a headset;
-	// the desktop equivalent is the #ui-toggle button. The status badge is not shown.
+	// The head-locked hud (Hide/Show-UI window) only makes sense with a headset;
+	// the desktop equivalent is the #ui-toggle button.
 	hud.visible = immersive && !displayOnlyMode;
 	// Mouse orbit/pan/zoom only makes sense windowed — the headset pose drives
 	// the camera during an XR session.
@@ -9013,45 +7046,24 @@ function onWindowResize() {
 
 window.addEventListener('resize', onWindowResize);
 
-// ============================================================================
-// VR Session Handlers
-// ============================================================================
-function positionAllPanels(chatY) {
-	const inputY = chatY - CHAT_PANEL_HEIGHT / 2 - INPUT_PANEL_GAP - INPUT_PANEL_HEIGHT / 2;
-	const kbY = inputY - INPUT_PANEL_HEIGHT / 2 - KEYBOARD_PANEL_GAP - KEYBOARD_PANEL_HEIGHT / 2;
-	const sideX = CHAT_PANEL_WIDTH / 2 + SIDE_PANEL_GAP + SIDE_PANEL_WIDTH / 2;
-	const sceneX = -(CHAT_PANEL_WIDTH / 2 + SCENE_PANEL_GAP + SCENE_PANEL_WIDTH / 2);
-	if (chatPanel) chatPanel.position.set(0, chatY, -CHAT_PANEL_DISTANCE);
-	if (inputPanel) inputPanel.position.set(0, inputY, -CHAT_PANEL_DISTANCE);
-	if (keyboardPanel) keyboardPanel.position.set(0, kbY, -CHAT_PANEL_DISTANCE);
-	if (sidePanel) sidePanel.position.set(sideX, chatY, -CHAT_PANEL_DISTANCE);
-	if (scenePanel) scenePanel.position.set(sceneX, chatY, -CHAT_PANEL_DISTANCE);
-	if (htmlInCanvas) layoutHtmlInCanvasPanel(chatY);
-}
-
 renderer.xr.addEventListener('sessionstart', () => {
 	// 'local-floor' reference space: origin at the real floor, eye level
-	// is around y=1.6, so anchor panels just below eye level for comfort.
-	positionAllPanels(1.4);
+	// is around y=1.6, so the menu sits just below eye level for comfort.
+	layoutVrWindows();
 	resetPanelAnchor();
 	if (windowAnchorMode === 'follow') _anchorSnapNext = true; // start right in front of you
 	setImmersiveUiMode(true);
-	applyLayDownView();
 
 	// Always VR color/skybox. immersive-ar is not started.
 	isVRMode = true;
 	applyEnvironmentMode();
-	renderSidePanel();
 	renderDomEnv();
 });
 
 renderer.xr.addEventListener('sessionend', () => {
-	positionAllPanels(1.4);
 	resetPanelAnchor();
 	isVRMode = true;
 	applyEnvironmentMode();
-	applyLayDownView(); // clear pitch so desktop orbit stays upright
-	renderSidePanel();
 	renderDomEnv();
 	setImmersiveUiMode(false);
 	resetCameraView(); // back to the default desktop view (not the headset pose)
@@ -9060,8 +7072,8 @@ renderer.xr.addEventListener('sessionend', () => {
 // ============================================================================
 // Window anchoring — Fixed (in the world) or Follow head (lazy, yaw-only)
 // ============================================================================
-// Every XR window (chat, input, keyboard, side, scene/code, HTML mirror) is a
-// child of panelAnchor, positioned exactly as before in its local space. In
+// The world VR windows (menu and keyboard) are children of panelAnchor,
+// positioned by layoutVrWindows() in its local space. In
 // Fixed mode the anchor is the identity, so nothing changes. In Follow mode
 // the anchor glides to the head's position and heading, but only once the
 // windows drift out of a comfort zone (turned away > 50 degrees, walked > 0.4 m
@@ -9106,7 +7118,7 @@ function wrapAngle(a) {
 function updatePanelAnchor(dt, xrCamera) {
 	if (windowAnchorMode !== 'follow') return;
 	// Don't slide a window out from under an active trigger drag.
-	if (htmlScrollDrag[0] || htmlScrollDrag[1]) return;
+	if (vrWindows && vrWindows.anyDragging()) return;
 	xrCamera.getWorldPosition(_anchorHeadPos);
 	xrCamera.getWorldDirection(_anchorHeadDir);
 	const horiz = Math.hypot(_anchorHeadDir.x, _anchorHeadDir.z);
@@ -9163,7 +7175,7 @@ function setWindowAnchorMode(mode, { persist = true } = {}) {
 		try { localStorage.setItem(WINDOW_ANCHOR_STORAGE_KEY, mode); } catch { /* storage blocked */ }
 	}
 	renderWindowAnchorUi();
-	renderSidePanel();
+	renderDomEnv();
 	updateStatus(mode === 'follow' ? 'Windows follow your head' : 'Windows fixed in place', '');
 }
 
@@ -9172,127 +7184,138 @@ document.querySelectorAll('#dchat-window-anchor [data-window-anchor]').forEach((
 });
 
 // ============================================================================
-// HTML in canvas — live #desktop-chat mirrored onto a VR menu mesh
+// VR windows: menu, keyboard, Hide/Show UI (all painted by htmlInCanvas.js)
 // ============================================================================
-function createHtmlInCanvasPanel() {
-	htmlInCanvasCanvas = document.createElement('canvas');
-	htmlInCanvasCanvas.width = 4;
-	htmlInCanvasCanvas.height = 4;
-	htmlInCanvasTexture = new THREE.CanvasTexture(htmlInCanvasCanvas);
-	htmlInCanvasTexture.minFilter = THREE.LinearFilter;
-	htmlInCanvasTexture.magFilter = THREE.LinearFilter;
-	const geometry = new THREE.PlaneGeometry(CHAT_PANEL_WIDTH, CHAT_PANEL_HEIGHT);
-	const material = new THREE.MeshBasicMaterial({
-		map: htmlInCanvasTexture,
-		transparent: true,
-		side: THREE.DoubleSide
+const VR_MENU_Y = 1.4;          // menu centre height (local-floor; eyes ~1.6 m)
+const VR_HUD_DISTANCE = 0.85;   // head-locked Hide/Show UI button
+const vrKeyboardEl = document.getElementById('gs-vr-keyboard');
+const vrHudEl = document.getElementById('gs-vr-hud');
+const vrHudToggle = document.getElementById('gs-vr-hud-toggle');
+
+function kbEscape(text) {
+	return String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' }[c]));
+}
+
+function vrFieldLabel(field) {
+	if (!field) return '';
+	const aria = field.getAttribute('aria-label');
+	if (aria) return aria;
+	if (field.placeholder) return field.placeholder;
+	if (field.id && field.labels && field.labels[0]) return field.labels[0].textContent.trim();
+	return 'text field';
+}
+
+// Rebuild the keyboard's buttons (letters/symbols layer, shift state, and
+// "Send" vs "Enter" for the field being typed into).
+function renderVrKeyboard() {
+	if (!vrKeyboardEl) return;
+	const rows = keyboardSymbols ? KB_ROWS_SYMBOLS : KB_ROWS_LETTERS;
+	const multiline = vrKeyboardTarget instanceof HTMLTextAreaElement && vrKeyboardTarget !== desktopChatInput && vrKeyboardTarget !== dchatThemeChatInput;
+	const parts = [
+		`<div class="gs-vr-kb-head"><span>Typing in: ${kbEscape(vrFieldLabel(vrKeyboardTarget))}</span>` +
+		'<button type="button" class="gs-vr-key gs-vr-key-action gs-vr-kb-done" data-kb-action="done">Done</button></div>'
+	];
+	for (const row of rows) {
+		parts.push('<div class="gs-vr-kb-row">');
+		for (const raw of row) {
+			const k = normalizeKey(raw);
+			let label = k.label;
+			if (k.action === 'char' && keyboardShift && /^[a-z]$/.test(k.value)) label = k.value.toUpperCase();
+			if (k.action === 'enter') label = multiline ? 'Enter' : 'Send';
+			const cls = ['gs-vr-key'];
+			if (k.action !== 'char') cls.push('gs-vr-key-action');
+			if (k.action === 'enter') cls.push('gs-vr-key-enter');
+			if (k.action === 'shift' && keyboardShift) cls.push('active');
+			parts.push(`<button type="button" class="${cls.join(' ')}" style="flex-grow:${k.w}" data-kb-action="${k.action}" data-kb-value="${kbEscape(k.value)}">${kbEscape(label)}</button>`);
+		}
+		parts.push('</div>');
+	}
+	vrKeyboardEl.innerHTML = parts.join('');
+}
+
+// A text field in a VR window was pointed at: type into it with the VR
+// keyboard. The field is marked (.gs-vr-typing) instead of DOM-focused.
+function openVrKeyboard(field) {
+	if (!field) return;
+	if (vrKeyboardTarget && vrKeyboardTarget !== field) vrKeyboardTarget.classList.remove('gs-vr-typing');
+	vrKeyboardTarget = field;
+	field.classList.add('gs-vr-typing');
+	try { field.setSelectionRange(field.value.length, field.value.length); } catch { /* type=number etc. */ }
+	keyboardShift = false;
+	keyboardSymbols = false;
+	vrKeyboardOpen = true;
+	renderVrKeyboard();
+	applyXrPanelVisibility();
+	layoutVrWindows();
+}
+
+function closeVrKeyboard({ apply = true } = {}) {
+	if (vrKeyboardTarget) vrKeyboardTarget.classList.remove('gs-vr-typing');
+	vrKeyboardTarget = null;
+	vrKeyboardOpen = false;
+	if (apply) applyXrPanelVisibility();
+}
+
+function onVrKeyboardKey(action, value) {
+	if (action === 'done') { closeVrKeyboard(); return; }
+	const target = vrKeyboardTarget;
+	if (!target || !target.isConnected) { closeVrKeyboard(); return; }
+	if (action === 'enter' && (target === desktopChatInput || target === dchatThemeChatInput)) {
+		sendActiveChatField();
+		return;
+	}
+	dispatchKeyToDomField(target, { action, value });
+}
+
+if (vrKeyboardEl) {
+	vrKeyboardEl.addEventListener('click', (e) => {
+		const key = e.target.closest('[data-kb-action]');
+		if (!key) return;
+		onVrKeyboardKey(key.dataset.kbAction, key.dataset.kbValue);
 	});
-	htmlInCanvasPanel = new THREE.Mesh(geometry, material);
-	htmlInCanvasPanel.name = 'htmlInCanvasPanel';
-	htmlInCanvasPanel.visible = false;
-	htmlInCanvasPanel.position.set(0, 1.4, -CHAT_PANEL_DISTANCE);
-	scene.add(htmlInCanvasPanel);
+}
+if (vrHudToggle) vrHudToggle.addEventListener('click', () => toggleUi());
+
+// After any click in the menu: drop the keyboard if the field it was typing
+// into went away (tab switch, dialog closed).
+function onVrWindowActivate(win, el, field) {
+	if (!vrKeyboardOpen || win !== vrMainWindow || isHtmlTextField(field)) return;
+	const t = vrKeyboardTarget;
+	if (!t || !t.isConnected || t.getClientRects().length === 0) closeVrKeyboard();
 }
 
-function layoutHtmlInCanvasPanel(chatY = 1.4) {
-	if (!htmlInCanvasPanel) return;
-	const aspect = htmlInCanvasAspect > 0.05 ? htmlInCanvasAspect : 1.35;
-	let width = 1.15;
-	let height = width * aspect;
-	const maxH = 1.25;
-	if (height > maxH) {
-		height = maxH;
-		width = height / aspect;
-	}
-	const params = htmlInCanvasPanel.geometry && htmlInCanvasPanel.geometry.parameters;
-	if (!params || Math.abs(params.width - width) > 0.001 || Math.abs(params.height - height) > 0.001) {
-		htmlInCanvasPanel.geometry.dispose();
-		htmlInCanvasPanel.geometry = new THREE.PlaneGeometry(width, height);
-	}
-	htmlInCanvasPanel.position.set(0, chatY, -CHAT_PANEL_DISTANCE);
-	// Keep the Environment side panel (the toggle) just to the right of the mirror.
-	if (htmlInCanvas && sidePanel) {
-		const sideX = width / 2 + SIDE_PANEL_GAP + SIDE_PANEL_WIDTH / 2;
-		sidePanel.position.set(sideX, chatY, -CHAT_PANEL_DISTANCE);
-	}
-	if (htmlInCanvas && keyboardPanel && keyboardPanel.visible) {
-		const kbY = chatY - height / 2 - KEYBOARD_PANEL_GAP - KEYBOARD_PANEL_HEIGHT / 2;
-		keyboardPanel.position.set(0, kbY, -CHAT_PANEL_DISTANCE);
-	}
+// Menu centred at VR_MENU_Y, keyboard right under it, HUD at the top right
+// of the view. Every window uses the same CSS px -> metre scale.
+function layoutVrWindows() {
+	if (!vrWindows) return;
+	const z = -VR_WINDOW_DISTANCE;
+	vrMainWindow.mesh.position.set(0, VR_MENU_Y, z);
+	const kbTop = VR_MENU_Y - vrMainWindow.heightM / 2 - VR_KEYBOARD_GAP;
+	vrKeyboardWindow.mesh.position.set(0, kbTop - vrKeyboardWindow.heightM / 2, z);
+	vrHudWindow.mesh.position.set(0.36 - vrHudWindow.widthM / 2, 0.2, -VR_HUD_DISTANCE);
 }
 
-// The mirror is repainted only when #desktop-chat actually changed (DOM
-// mutation, scroll, input, focus) instead of unconditionally every 200 ms.
-// Each repaint walks the menu and re-uploads the texture, which on a Quest
-// was the frame-time hog while the Code tab was open.
-const HTML_PAINT_MIN_MS = 66;      // cap repaints at ~15/s while content changes
-const HTML_PAINT_IDLE_MS = 2000;   // safety refresh for CSS-only changes (hover, animations)
-let _htmlDirty = true;
-let _htmlObserver = null;
-function markHtmlInCanvasDirty() { _htmlDirty = true; }
-function watchHtmlInCanvasSource(on) {
-	if (!desktopChat) return;
-	if (on && !_htmlObserver) {
-		_htmlObserver = new MutationObserver(markHtmlInCanvasDirty);
-		_htmlObserver.observe(desktopChat, { subtree: true, childList: true, characterData: true, attributes: true });
-		for (const ev of ['scroll', 'input', 'change', 'focusin', 'focusout']) {
-			desktopChat.addEventListener(ev, markHtmlInCanvasDirty, true);
-		}
-	} else if (!on && _htmlObserver) {
-		_htmlObserver.disconnect();
-		_htmlObserver = null;
-		for (const ev of ['scroll', 'input', 'change', 'focusin', 'focusout']) {
-			desktopChat.removeEventListener(ev, markHtmlInCanvasDirty, true);
-		}
+function initVrWindows() {
+	vrWindows = createVrWindowManager({
+		THREE,
+		paint: paintElementToCanvas,
+		onTextFieldFocus: (field) => openVrKeyboard(field),
+		onActivate: onVrWindowActivate
+	});
+	// Window chrome that only makes sense with a mouse is not clickable in VR.
+	const blockDesktopChrome = (el) => !!el.closest('#desktop-chat-minimize, .dchat-resize');
+	vrMainWindow = vrWindows.createWindow({ name: 'menu', source: desktopChat, parent: panelAnchor, blocked: blockDesktopChrome });
+	vrKeyboardWindow = vrWindows.createWindow({ name: 'keyboard', source: vrKeyboardEl, parent: panelAnchor });
+	vrHudWindow = vrWindows.createWindow({ name: 'hud', source: vrHudEl, parent: hud, distance: VR_HUD_DISTANCE });
+	for (const w of vrWindows.windows) {
+		w.onResize = layoutVrWindows;
+		// Same menu layer / draw order as the rest of the XR UI (always on top).
+		registerMenuRoot(w.mesh);
 	}
-	_htmlDirty = true;
-}
-
-function tickHtmlInCanvas(force) {
-	if (!htmlInCanvasPanel || !htmlInCanvasPanel.visible || !desktopChat || !htmlInCanvasCanvas) return;
-	const now = performance.now();
-	if (!force) {
-		const since = now - _htmlPaintAt;
-		if (_htmlDirty ? since < HTML_PAINT_MIN_MS : since < HTML_PAINT_IDLE_MS) return;
-	}
-	_htmlPaintAt = now;
-	_htmlDirty = false;
-	try {
-		const metrics = paintElementToCanvas(desktopChat, htmlInCanvasCanvas);
-		if (htmlInCanvasTexture) htmlInCanvasTexture.needsUpdate = true;
-		if (metrics && metrics.width > 0) {
-			const aspect = metrics.height / metrics.width;
-			if (Math.abs(aspect - htmlInCanvasAspect) > 0.02) {
-				htmlInCanvasAspect = aspect;
-				layoutHtmlInCanvasPanel();
-			}
-		}
-	} catch (err) {
-		console.warn('HTML in canvas paint failed:', err);
-	}
-}
-
-function setHtmlInCanvas(on) {
-	htmlInCanvas = !!on;
-	watchHtmlInCanvasSource(htmlInCanvas);
-	if (!htmlInCanvas) htmlKeyboardForDom = false;
-	applyXrPanelVisibility(xrSessionActive());
-	if (htmlInCanvas) {
-		htmlInCanvasAspect = 0;
-		tickHtmlInCanvas(true);
-		layoutHtmlInCanvasPanel();
-	} else {
-		positionAllPanels(1.4);
-	}
-	renderSidePanel();
-	updateStatus(htmlInCanvas ? 'HTML in canvas: showing desktop menu' : 'XR canvas panels', '');
-}
-
-function htmlInCanvasTextField() {
-	if (!htmlInCanvas || !htmlKeyboardForDom || !desktopChat) return null;
-	const el = document.activeElement;
-	if (!isHtmlTextField(el) || !desktopChat.contains(el)) return null;
-	return el;
+	renderVrKeyboard();
+	layoutVrWindows();
+	// Test / debug hook (read-only use in test-harness/vr-windows).
+	window.__gsVrWindows = vrWindows;
 }
 
 function dispatchKeyToDomField(el, key) {
@@ -9311,7 +7334,7 @@ function dispatchKeyToDomField(el, key) {
 			write(c);
 			if (keyboardShift) {
 				keyboardShift = false;
-				renderKeyboardToCanvas();
+				renderVrKeyboard();
 			}
 			break;
 		}
@@ -9333,12 +7356,12 @@ function dispatchKeyToDomField(el, key) {
 		}
 		case 'shift':
 			keyboardShift = !keyboardShift;
-			renderKeyboardToCanvas();
+			renderVrKeyboard();
 			break;
 		case 'symbols':
 			keyboardSymbols = !keyboardSymbols;
 			keyboardShift = false;
-			renderKeyboardToCanvas();
+			renderVrKeyboard();
 			break;
 		case 'enter':
 			if (el instanceof HTMLTextAreaElement) write('\n');
@@ -9350,26 +7373,19 @@ function dispatchKeyToDomField(el, key) {
 // ============================================================================
 // Initialize and Animation Loop
 // ============================================================================
-createChatPanel();
-createInputPanel();
-createKeyboardPanel();
-createSidePanel();
-createScenePanel();
-createHtmlInCanvasPanel();
-// All XR windows ride on panelAnchor (identity in Fixed mode, see above).
-for (const panel of [chatPanel, inputPanel, keyboardPanel, sidePanel, scenePanel, htmlInCanvasPanel]) {
-	if (panel) panelAnchor.add(panel);
-}
+migrateLayDownState();
+// The menu and keyboard windows ride on panelAnchor (identity in Fixed mode).
+initVrWindows();
+renderDomEnv();
+renderDomSceneList();
 {
 	let savedAnchor = null;
 	try { savedAnchor = localStorage.getItem(WINDOW_ANCHOR_STORAGE_KEY); } catch { /* storage blocked */ }
 	windowAnchorMode = savedAnchor === 'follow' ? 'follow' : 'fixed';
 	renderWindowAnchorUi();
 }
-createHudStatus();
-createUiToggle();
-// Start in windowed (non-XR) mode: the desktop chat window is the UI, and the
-// legacy 3D canvas panels stay hidden until a VR session starts.
+// Start in windowed (non-XR) mode: the desktop chat window is the UI; the VR
+// windows stay hidden until a VR session starts.
 setImmersiveUiMode(false);
 applyEnvironmentMode();
 
@@ -9396,30 +7412,42 @@ snapshotSystemObjects();
 // Add welcome message
 const welcomeMsg = 'VR Code Assistant ready. Ask me to add objects, modify the scene, or inject HTML — I\'ll write and execute the code live.';
 displayMessages.push({ role: 'assistant', content: welcomeMsg });
-renderChatToCanvas();
+renderDomChat();
 
 const _rayTempMatrix = new THREE.Matrix4();
 const _rayOrigin = new THREE.Vector3();
 const _rayDir = new THREE.Vector3();
 const _hitRaycaster = new THREE.Raycaster();
-const _hitTargets = []; // populated after panels exist
+const _hitTargets = []; // visible VR window meshes, rebuilt each XR frame
 
-// World-anchored XR panels plus the head-locked hud (status + Hide/Show UI).
-// Reticles register themselves in createReticle. Anything added under these
-// roots later is pulled onto layer 1 by applyMenuLayerPriority() each frame.
-registerMenuRoot(chatPanel);
-registerMenuRoot(inputPanel);
-registerMenuRoot(keyboardPanel);
-registerMenuRoot(sidePanel);
-registerMenuRoot(scenePanel);
-registerMenuRoot(htmlInCanvasPanel);
+// The VR windows registered themselves in initVrWindows(); reticles in
+// createReticle. Anything added under these roots later is pulled onto layer 1
+// by applyMenuLayerPriority() each frame.
 registerMenuRoot(hud);
 applyMenuLayerPriority();
 // Previous per-hand button-pressed state, for edge detection (ray toggle) and
 // hold detection (push-to-talk). Keyed by handedness → button index → bool.
 const _prevButtons = { left: {}, right: {} };
-let _stickScrollAt = 0;
 const _cameraWorldPos = new THREE.Vector3();
+const _tmpHitNormal = new THREE.Vector3();
+const _noHits = [];
+const VR_RETICLE_COLOR = 0xfacc15; // same amber as the .gs-ray-hover ring
+
+// Thumbstick scroll (locomotion off) of the window under that hand's ray.
+function stickScrollVrWindow(hand, dy) {
+	if (!vrWindows || !dy) return;
+	for (let i = 0; i < 2; i++) {
+		const c = renderer.xr.getController(i);
+		if (!c || c.userData.handedness !== hand) continue;
+		_rayTempMatrix.identity().extractRotation(c.matrixWorld);
+		_rayOrigin.setFromMatrixPosition(c.matrixWorld);
+		_rayDir.set(0, 0, -1).applyMatrix4(_rayTempMatrix);
+		_hitRaycaster.set(_rayOrigin, _rayDir);
+		const hit = _hitRaycaster.intersectObjects(visibleVrWindowMeshes(_selectTargets), false).find((h) => h.uv);
+		const win = hit && vrWindows.byMesh(hit.object);
+		if (win) win.scrollAt(hit.uv, dy);
+	}
+}
 
 renderer.setAnimationLoop((time) => {
 	// Frame delta (seconds), clamped so a paused/backgrounded tab doesn't jump.
@@ -9439,28 +7467,13 @@ renderer.setAnimationLoop((time) => {
 		xrCamera.getWorldPosition(cameraWorldPos);
 		updatePanelAnchor(dt, xrCamera);
 
-		if (chatPanel) chatPanel.lookAt(cameraWorldPos);
-		if (inputPanel) inputPanel.lookAt(cameraWorldPos);
-		if (keyboardPanel) keyboardPanel.lookAt(cameraWorldPos);
-		if (sidePanel) sidePanel.lookAt(cameraWorldPos);
-		if (scenePanel) scenePanel.lookAt(cameraWorldPos);
-		if (htmlInCanvasPanel && htmlInCanvasPanel.visible) htmlInCanvasPanel.lookAt(cameraWorldPos);
-		tickHtmlInCanvas(false);
+		// World windows face the camera while staying upright.
+		vrMainWindow.mesh.lookAt(cameraWorldPos);
+		vrKeyboardWindow.mesh.lookAt(cameraWorldPos);
 
-		// Build hit-target list (panels that exist and are showing)
-		_hitTargets.length = 0;
-		if (uiTogglePanel && !displayOnlyMode) _hitTargets.push(uiTogglePanel); // always reachable (unless display-only share)
-		if (!uiCollapsed && !displayOnlyMode) {
-			if (htmlInCanvasPanel && htmlInCanvasPanel.visible) _hitTargets.push(htmlInCanvasPanel);
-			if (scenePanel && scenePanel.visible) _hitTargets.push(scenePanel);
-			if (sidePanel && sidePanel.visible) _hitTargets.push(sidePanel);
-			if (inputPanel && inputPanel.visible) _hitTargets.push(inputPanel);
-			if (keyboardPanel && keyboardPanel.visible) _hitTargets.push(keyboardPanel);
-			if (chatPanel && chatPanel.visible) _hitTargets.push(chatPanel);
-		}
+		// Ray targets: the VR windows that are showing.
+		visibleVrWindowMeshes(_hitTargets);
 
-		// Update reticles per controller; track keyboard hover across both hands.
-		let frameKbHover = -1;
 		for (let i = 0; i < 2; i++) {
 			const controller = renderer.xr.getController(i);
 			const reticle = reticles[i];
@@ -9471,54 +7484,31 @@ renderer.setAnimationLoop((time) => {
 			_rayDir.set(0, 0, -1).applyMatrix4(_rayTempMatrix);
 
 			_hitRaycaster.set(_rayOrigin, _rayDir);
-			const intersects = _hitRaycaster.intersectObjects(_hitTargets);
+			const intersects = _hitTargets.length ? _hitRaycaster.intersectObjects(_hitTargets, false) : _noHits;
 
 			// Canvas surfaces (p5 / blank canvas) — hover, cursor dot, events.
 			const surfHit = updateSurfacePointer(i, _rayOrigin, _rayDir, intersects, reticle);
-			if (surfHit) {
-				// cursor dot already placed on the sketch
-			} else if (intersects.length > 0) {
-				const hit = intersects[0];
+			const hit = !surfHit && intersects.length > 0 ? intersects[0] : null;
+			const hitWin = hit ? vrWindows.byMesh(hit.object) : null;
+			if (hit) {
 				reticle.position.copy(hit.point);
-				// Face along hit normal (toward the camera side of the panel)
-				reticle.lookAt(
-					hit.point.x + hit.face.normal.x,
-					hit.point.y + hit.face.normal.y,
-					hit.point.z + hit.face.normal.z
-				);
+				// Face along hit normal (toward the camera side of the window)
+				_tmpHitNormal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
+				if (_tmpHitNormal.dot(_rayDir) > 0) _tmpHitNormal.negate();
+				reticle.lookAt(hit.point.x + _tmpHitNormal.x, hit.point.y + _tmpHitNormal.y, hit.point.z + _tmpHitNormal.z);
+				reticle.material.color.setHex(VR_RETICLE_COLOR);
 				reticle.visible = true;
-
-				// Highlight color based on what's being aimed at
-				if (hit.object === uiTogglePanel) {
-					reticle.material.color.setHex(0x8b5cf6); // purple — UI toggle
-				} else if (hit.object === scenePanel) {
-					reticle.material.color.setHex(0xf59e0b); // amber for scene panel
-				} else if (hit.object === sidePanel) {
-					reticle.material.color.setHex(0x10b981); // green for side panel
-				} else if (hit.object === keyboardPanel) {
-					reticle.material.color.setHex(0x6366f1); // indigo
-					if (hit.uv) frameKbHover = keyIndexAtUV(hit.uv);
-				} else if (hit.object === htmlInCanvasPanel) {
-					reticle.material.color.setHex(0x6366f1);
-				} else if (hit.object === inputPanel && hit.uv) {
-					const L = inputPanelLayout();
-					const cx = hit.uv.x * L.W;
-					if (cx >= L.sendX) reticle.material.color.setHex(0x8b5cf6); // purple — send
-					else if (cx >= L.micX) reticle.material.color.setHex(0x22d3ee); // cyan — mic/keys buttons
-					else reticle.material.color.setHex(0x6366f1); // indigo
-				} else {
-					reticle.material.color.setHex(0x6366f1); // indigo
-				}
-			} else {
+			} else if (!surfHit) {
 				reticle.visible = false;
 			}
-			if (htmlScrollDrag[i]) {
-				const htmlHit = intersects.find((h) => h.object === htmlInCanvasPanel && h.uv);
-				if (htmlHit) moveHtmlInCanvasScrollDrag(i, htmlHit.uv);
+			// Same hover ring on every window (.gs-ray-hover, see index.html).
+			for (const w of vrWindows.windows) {
+				if (w.drag[i] && hit && hitWin === w) w.moveDrag(i, hit.uv);
+				w.setHover(i, hitWin === w && hit.uv ? hit.uv : null, time);
 			}
 		}
-		// Apply keyboard hover (re-renders only when the hovered key changes)
-		setKeyboardHover(keyboardCollapsed ? -1 : frameKbHover);
+		// Dirty-driven repaints (<= ~15/s per window, idle refresh every 2 s).
+		vrWindows.tickAll(time);
 		// Poll thumbsticks (scrolling) and buttons (ray toggle + push-to-talk)
 		const session = renderer.xr.getSession();
 		if (session) {
@@ -9553,47 +7543,13 @@ renderer.setAnimationLoop((time) => {
 
 				// Thumbsticks scroll only while locomotion is off; otherwise they
 				// drive movement/turning (handled by updateLocomotion below).
+				// Either stick scrolls whatever scrolls under that hand's ray.
 				if (locomotionMode === 'off') {
 					const axes = gp ? gp.axes : null;
 					if (!axes) continue;
 					const thumbY = axes.length >= 4 ? axes[3] : (axes.length >= 2 ? axes[1] : 0);
+					if (Math.abs(thumbY) > THUMBSTICK_DEADZONE) stickScrollVrWindow(hand, thumbY * STICK_SCROLL_PX_PER_S * dt);
 
-					if (hand === 'right' && Math.abs(thumbY) > THUMBSTICK_DEADZONE) {
-						// The HTML-in-canvas mirror is not stick-scrolled. Right stick
-						// stays free for yaw. Scroll that menu by pointing at it and
-						// pulling the trigger (see beginHtmlInCanvasScrollDrag).
-						if (!(htmlInCanvas && htmlInCanvasPanel && htmlInCanvasPanel.visible)) {
-							// Right thumbstick: scroll the canvas chat panel
-							chatScrollOffset += thumbY < 0 ? SCROLL_SPEED : -SCROLL_SPEED;
-							chatScrollOffset = Math.max(0, chatScrollOffset);
-							renderChatToCanvas();
-						}
-					}
-					if (hand === 'left' && Math.abs(thumbY) > THUMBSTICK_DEADZONE) {
-						// Left thumbstick: scroll active left-panel list. Stepped at
-						// ~30 Hz and only redrawn when the offset really moved
-						// (it used to redraw + re-upload every frame, even at an end).
-						if (time - _stickScrollAt >= 33) {
-							_stickScrollAt = time;
-							const dir = thumbY < 0 ? 1 : -1;
-							const clampTo = (v, max) => Math.max(0, Math.min(v, max));
-							let changed = false;
-							if (scenePanelSubTab === 'code') {
-								const v = clampTo(codeScrollOffset + 2 * dir, _scenePanelMaxScroll.code);
-								changed = v !== codeScrollOffset;
-								codeScrollOffset = v;
-							} else if (scenePanelSubTab === 'files') {
-								const v = clampTo(filesScrollOffset + dir, _scenePanelMaxScroll.files);
-								changed = v !== filesScrollOffset;
-								filesScrollOffset = v;
-							} else if (scenePanelSubTab === 'scenes') {
-								const v = clampTo(sceneScrollOffset + dir, _scenePanelMaxScroll.scenes);
-								changed = v !== sceneScrollOffset;
-								sceneScrollOffset = v;
-							}
-							if (changed) renderScenePanel({ dom: false });
-						}
-					}
 				}
 			}
 

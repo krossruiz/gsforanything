@@ -26,7 +26,7 @@ Local HTTPS test serve (box): often `/workspace/gs-serve-gh` on `https://localho
 ## Vercel
 
 1. Ask user for version → update `version.js` + `versions.json`.
-2. Ensure `vercel.json` `includeFiles` lists every client module the browser imports (`main.js`, `syntaxHighlight.js`, `version.js`, `versions.json`, `htmlInCanvas.js`, `menuSystem.js`, `exporter.js`, `creationContext.js`, `p5Import.js`, `communityMerge.js`, `twinSticks.js`, `cameraControls.js`, `threejsAddons/**`, `vendor_modules/**`, etc.).
+2. Ensure `vercel.json` `includeFiles` lists every client module the browser imports (`main.js`, `syntaxHighlight.js`, `version.js`, `versions.json`, `htmlInCanvas.js`, `menuSystem.js`, `vrWindows.js`, `exporter.js`, `creationContext.js`, `p5Import.js`, `communityMerge.js`, `twinSticks.js`, `cameraControls.js`, `threejsAddons/**`, `vendor_modules/**`, etc.).
 3. Commit only the intended files; push `origin/main`.
 4. **GitHub auto-deploy** usually ships Production for `vrclaudeinterface` / `carljr`. If the PC is online and logged into Vercel CLI: `npx vercel --prod --yes` from the repo root.
 5. Verify (below).
@@ -43,7 +43,7 @@ Wrangler is typically authenticated on the **box**, not always on the PC.
 
 1. Ask user for version → same `version.js` / `versions.json` as Vercel (from `origin/main`).
 2. `cd worker && ./sync-public.sh` — copies **all** browser assets into `worker/public/` (gitignored):
-   - `index.html`, `main.js`, `version.js`, `versions.json`, `syntaxHighlight.js`, `htmlInCanvas.js`, `p5Import.js`, `menuSystem.js`, `exporter.js`, `creationContext.js`, `communityMerge.js`, `twinSticks.js`, `cameraControls.js`
+   - `index.html`, `main.js`, `version.js`, `versions.json`, `syntaxHighlight.js`, `htmlInCanvas.js`, `vrWindows.js`, `p5Import.js`, `menuSystem.js`, `exporter.js`, `creationContext.js`, `communityMerge.js`, `twinSticks.js`, `cameraControls.js`
    - `threejsAddons/`
    - **full `vendor_modules/`** — especially `vendor_modules/three/build/three.module.js` (the script fails if it is missing)
    - Add any new browser file to `sync-public.sh` **and** `vercel.json` `includeFiles`.

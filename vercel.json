@@ -14,6 +14,7 @@
           "site-source/versions.json",
           "site-source/htmlInCanvas.js",
           "site-source/menuSystem.js",
+          "site-source/vrWindows.js",
           "site-source/exporter.js",
           "site-source/creationContext.js",
           "site-source/communityMerge.js",
