@@ -38,7 +38,9 @@ Three moving parts:
 | `site-source/server.js` | Express server: static hosting + `/api/chat`, `/api/fix-code`, `/api/save-scene`, `/api/load-scene`. Holds the system prompts. |
 | `site-source/index.html` | DOM shell + styles: chat overlay (input/MIC/Send), status pill, `#ui-toggle`, export modal, and the WebXR `overlay-root`. |
 | `site-source/main.js` | The whole client app: scene setup, panels, input, speech, locomotion, and the vr-exec execution engine. |
-| `site-source/exporter.js` | Share tab + 3D export: collects user content (plus the scene code's directional/point/spot lights; not GS's default rig, ambient or hemisphere), GLB and self-contained .gltf (GLTFExporter, KHR_lights_punctual), binary FBX 7.4 writer, OBJ+MTL+textures .zip, Blender .zip (.glb + `open_in_blender.py`), the export dialog and the Share tab content. Share link reuses main.js `shareCurrentScene()` → the Community share modal / upload flow. VR: Scenes panel shortcuts (Share link, Save GLB/glTF/FBX/OBJ/Blender) download directly / copy the link. |
+| `site-source/vrWindows.js` | The one VR window path: DOM element → `htmlInCanvas.js` paint → textured plane, plus ray hover/click/drag/scroll and text-field focus for the menu, keyboard and HUD windows. |
+| `site-source/htmlInCanvas.js` | Paints a DOM subtree (boxes, gradients, borders, outlines, text, SVG) into a 2D canvas for the VR windows. |
+| `site-source/exporter.js` | Share tab + 3D export: collects user content (plus the scene code's directional/point/spot lights; not GS's default rig, ambient or hemisphere), GLB and self-contained .gltf (GLTFExporter, KHR_lights_punctual), binary FBX 7.4 writer, OBJ+MTL+textures .zip, Blender .zip (.glb + `open_in_blender.py`), the export dialog and the Share tab content. Share link reuses main.js `shareCurrentScene()` → the Community share modal / upload flow. In VR the Share tab is used as-is inside the menu window. |
 | `site-source/threejsAddons/ARButton.js` | Enter-session button; requests the immersive WebXR session with `local-floor` + `dom-overlay`. |
 | `site-source/node_modules/three` | Three.js (loaded via the import map in `index.html`). |
 
@@ -137,27 +139,32 @@ scene
 ├── player (rig / "dolly")            ← moves for locomotion
 │   ├── camera
 │   │   └── hud                        ← head-locked
-│   │       ├── hudStatusPanel         ← "Transcribing…" etc. badge
-│   │       └── uiTogglePanel          ← Hide/Show-UI button
+│   │       └── vrWindow:hud           ← Hide/Show-UI button (#gs-vr-hud)
 │   └── controller 0 / controller 1    ← with ray lines
-├── chatPanel   (Claude's replies)
-├── inputPanel  ([text][MIC][KEYS][Send])
-├── keyboardPanel (in-scene QWERTY)
-├── sidePanel   (session/mode toggle + color/brightness)
-├── scenePanel  (saved-scene manager)
-└── reticles (cursor rings)
+├── panelAnchor (identity when Fixed, eases after the head when Follow)
+│   ├── vrWindow:menu      ← the same #desktop-chat menu as desktop (all tabs)
+│   └── vrWindow:keyboard  ← in-scene QWERTY (#gs-vr-keyboard), shown while typing
+└── reticles (amber cursor rings)
 ```
 
-All panels are **canvas-texture planes**: each draws to a 2D `<canvas>`, wrapped
-in a `THREE.CanvasTexture` that's flagged `needsUpdate` when its content changes.
-Panels **billboard** (face the camera) each frame but stay at fixed world
-positions. `positionAllPanels()` lays them out around eye level.
+Every VR window is an **html-in-canvas window** (`vrWindows.js` +
+`htmlInCanvas.js`): a real DOM element is painted into a 2D `<canvas>`
+(`paintElementToCanvas`, opaque) and shown on a plane with a `CanvasTexture`.
+There is no second, hand-drawn canvas UI any more, so VR shows exactly the
+desktop menu, with the same styles. All windows share one CSS-px→metre scale
+(head-locked ones scaled by distance), the same frame, and the same ray
+behaviour: hover (amber `.gs-ray-hover` ring + amber reticle), trigger click,
+trigger-drag scroll, thumbstick scroll (locomotion off), and text fields that
+open the in-scene keyboard (cyan `.gs-vr-typing` ring). Repaints are throttled
+(~15/s while the DOM changes, every 2 s otherwise); p5/2D surfaces are scene
+content and still redraw every frame. `layoutVrWindows()` places the menu
+1.5 m ahead at eye level, the keyboard under it, the HUD top-right.
 
 ### Input & interaction
 
 - **Raycasting:** each controller casts a ray; a **reticle** ring shows the hit
   point and changes color by target. `onXRSelectStart` (trigger) dispatches a
-  click to whatever panel/button was hit; the render loop builds the hit-target
+  click to the DOM element under the hit (via the VR window); the render loop builds the hit-target
   list each frame and drives the reticle + hover highlight.
 - **Controller buttons:**
 
@@ -168,8 +175,8 @@ positions. `positionAllPanels()` lays them out around eye level.
   | B / Y | Toggle pointer ray *lines* (cursor stays) |
   | Thumbstick press | Collapse / restore all UI |
   | Right grip | Cycle locomotion mode (off → planar → free-roam) |
-  | Left thumbstick | Move (when locomotion on) / scroll scene list (when off) |
-  | Right thumbstick | Turn (when locomotion on) / scroll chat (when off) |
+  | Left thumbstick | Move (when locomotion on) / scroll what's under the ray (when off) |
+  | Right thumbstick | Turn (when locomotion on) / scroll what's under the ray (when off) |
 
 ### Locomotion
 
@@ -177,7 +184,7 @@ The camera + controllers live in a `player` rig. Moving/rotating that group is t
 WebXR-correct way to move the user (three.js composes the rig transform with the
 live headset pose). Modes cycle with the right grip button:
 
-- **off** — thumbsticks scroll the chat / scene list (original behavior).
+- **off** — thumbsticks scroll whatever window content is under that hand's ray.
 - **planar** — left stick moves on the horizontal plane (in/out + strafe) relative
   to where you look; no vertical.
 - **free** — left stick flies in the full look direction, including up/down.
@@ -187,9 +194,10 @@ Speeds are the `MOVE_SPEED` / `TURN_SPEED` constants.
 
 ### Text & voice input
 
-- **In-scene keyboard** (`keyboardPanel`): a QWERTY canvas keyboard driven by the
-  controller ray — used instead of the Quest system keyboard, which crashes the
-  browser inside an immersive session. Collapsible via the **KEYS** button.
+- **In-scene keyboard** (`vrWindow:keyboard`): an html-in-canvas QWERTY window
+  that opens when the ray clicks a text field (and closes with **Done**) — used
+  instead of the Quest system keyboard, which crashes the browser inside an
+  immersive session. Text fields are not DOM-focused in VR for the same reason.
 - **Speech-to-text** (cross-platform, no API key): audio is captured with
   `getUserMedia` + `MediaRecorder` and transcribed **locally in the browser** by
   Whisper via transformers.js (loaded on demand from a CDN, cached after first
@@ -231,8 +239,8 @@ any user animation callbacks in `window._vrAnimations`, and renders the scene.
 - **Secure context required:** WebXR *and* the microphone need HTTPS (or
   localhost). If XR runs, the mic generally can too.
 - **`dom-overlay` is unreliable on Quest 3**, so critical feedback is mirrored into
-  the 3D scene (input panel text, chat panel, head-locked status badge) rather
-  than relying on DOM elements being visible in-headset.
+  the 3D scene by painting the DOM itself into the VR windows (`vrWindows.js`)
+  rather than relying on DOM elements being visible in-headset.
 - **The system keyboard crashes immersive sessions** — hence the in-scene keyboard.
 - **`window.requestAnimationFrame` is paused during immersive sessions** — anything
   frame-driven (VAD, locomotion) runs from `renderer.setAnimationLoop` instead.

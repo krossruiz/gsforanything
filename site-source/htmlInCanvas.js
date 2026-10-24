@@ -11,7 +11,9 @@
  * (the snapshot stays blank). This walker instead samples the element the
  * browser has already laid out — the same node, not a second menu — and
  * redraws backgrounds, borders, text, form values, and simple SVG fills.
- * It is a snapshot of that element, refreshed while the toggle is on.
+ * It is a snapshot of that element, refreshed while the window is shown.
+ * Every VR window (main menu, keyboard, Hide/Show UI) is painted by this
+ * one function (see vrWindows.js), so they all share the page's CSS.
  */
 
 function isTransparent(color) {
@@ -67,6 +69,32 @@ function paintSvgUrlFill(ctx, el, fill, x, y, w, h) {
 	return true;
 }
 
+// CSS linear-gradient(...) -> canvas gradient across the box (angle aware
+// for the deg / "to right" forms the menu uses; anything else runs
+// top-left to bottom-right, which is what 135deg means on a wide button).
+function cssGradient(ctx, image, x, y, w, h) {
+	const m = String(image).match(/linear-gradient\((.*)\)\s*$/);
+	if (!m) return null;
+	const stops = m[1].match(/(rgba?\([^)]*\)|#[0-9a-fA-F]{3,8}\b)(\s+[\d.]+%)?/g);
+	if (!stops || !stops.length) return null;
+	let angle = 180;
+	const deg = m[1].match(/^\s*(-?[\d.]+)deg/);
+	if (deg) angle = parseFloat(deg[1]);
+	else if (/^\s*to right/.test(m[1])) angle = 90;
+	else if (/^\s*to bottom right/.test(m[1])) angle = 135;
+	const rad = (angle - 90) * Math.PI / 180;
+	const cx = x + w / 2, cy = y + h / 2;
+	const half = Math.abs(w / 2 * Math.cos(rad)) + Math.abs(h / 2 * Math.sin(rad));
+	const g = ctx.createLinearGradient(cx - Math.cos(rad) * half, cy - Math.sin(rad) * half, cx + Math.cos(rad) * half, cy + Math.sin(rad) * half);
+	stops.forEach((stop, i) => {
+		const pct = stop.match(/\s+([\d.]+)%$/);
+		const color = stop.replace(/\s+[\d.]+%$/, '');
+		const offset = pct ? Math.min(1, parseFloat(pct[1]) / 100) : (stops.length === 1 ? 0 : i / (stops.length - 1));
+		try { g.addColorStop(offset, color); } catch { /* unparsable stop */ }
+	});
+	return g;
+}
+
 function fillBox(ctx, x, y, w, h, radius, style) {
 	traceRoundRect(ctx, x, y, w, h, radius);
 	ctx.fillStyle = style;
@@ -99,8 +127,25 @@ function drawBackground(ctx, el, style, ox, oy) {
 				fillBox(ctx, x, y, w, h, radius, fill);
 			}
 		}
-	} else if (!isTransparent(style.backgroundColor)) {
-		fillBox(ctx, x, y, w, h, radius, style.backgroundColor);
+		// SVG stroke (menuSystem.js buttons carry a boundary stroke).
+		const stroke = el.getAttribute('stroke');
+		const sw = parseFloat(el.getAttribute('stroke-width')) || 0;
+		if (stroke && stroke !== 'none' && sw > 0) {
+			const svg = el.ownerSVGElement;
+			const k = svg && svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width > 0
+				? svg.getBoundingClientRect().width / svg.viewBox.baseVal.width : 1;
+			const lw = sw * k;
+			traceRoundRect(ctx, x + lw / 2, y + lw / 2, Math.max(0, w - lw), Math.max(0, h - lw), Math.max(0, radius - lw / 2));
+			ctx.strokeStyle = stroke;
+			ctx.lineWidth = lw;
+			ctx.stroke();
+		}
+	} else {
+		if (!isTransparent(style.backgroundColor)) fillBox(ctx, x, y, w, h, radius, style.backgroundColor);
+		if (style.backgroundImage && style.backgroundImage !== 'none') {
+			const g = cssGradient(ctx, style.backgroundImage, x, y, w, h);
+			if (g) fillBox(ctx, x, y, w, h, radius, g);
+		}
 	}
 
 	const bw = parseFloat(style.borderTopWidth) || 0;
@@ -111,6 +156,22 @@ function drawBackground(ctx, el, style, ox, oy) {
 		ctx.lineWidth = bw;
 		ctx.stroke();
 	}
+}
+
+// Outlines carry the focus ring and the controller-ray hover ring
+// (.gs-ray-hover), so they are painted after the element's children.
+function drawOutline(ctx, el, style, ox, oy) {
+	const ow = parseFloat(style.outlineWidth) || 0;
+	if (ow <= 0 || style.outlineStyle === 'none' || isTransparent(style.outlineColor)) return;
+	const rect = el.getBoundingClientRect();
+	if (rect.width < 0.5 || rect.height < 0.5) return;
+	const off = parseFloat(style.outlineOffset) || 0;
+	const grow = off + ow / 2;
+	const radius = (parseFloat(style.borderTopLeftRadius) || 0) + Math.max(0, grow);
+	traceRoundRect(ctx, rect.left - ox - grow, rect.top - oy - grow, rect.width + grow * 2, rect.height + grow * 2, radius);
+	ctx.strokeStyle = style.outlineColor;
+	ctx.lineWidth = ow;
+	ctx.stroke();
 }
 
 // One Range reused for every text node (was one allocation per node per paint).
@@ -129,7 +190,10 @@ function drawTextNode(ctx, node, style, ox, oy, clip) {
 	// Skip text scrolled out of the visible area before doing any font work.
 	if (clip && rectOutside(range.getBoundingClientRect(), clip)) return;
 	ctx.font = style.font || `${style.fontSize} ${style.fontFamily}`;
-	const fill = style.fill && style.fill !== 'none' && !String(style.fill).startsWith('url')
+	// SVG <text> paints with `fill`; HTML text with `color` (every HTML element
+	// also has a computed `fill`, black by default, so only use it inside SVG).
+	const inSvg = typeof SVGElement !== 'undefined' && node.parentNode instanceof SVGElement;
+	const fill = inSvg && style.fill && style.fill !== 'none' && !String(style.fill).startsWith('url')
 		? style.fill
 		: style.color;
 	ctx.fillStyle = fill || style.color || '#fff';
@@ -235,7 +299,11 @@ function drawFormValue(ctx, el, style, ox, oy) {
 	const nl = text.indexOf('\n');
 	if (nl >= 0) text = text.slice(0, nl);
 	if (text.length > 400) text = text.slice(0, 400);
-	ctx.fillStyle = faded ? 'rgba(255,255,255,0.45)' : (style.color || '#fff');
+	let fadedColor = 'rgba(255,255,255,0.72)';
+	if (faded) {
+		try { fadedColor = getComputedStyle(el, '::placeholder').color || fadedColor; } catch { /* no pseudo support */ }
+	}
+	ctx.fillStyle = faded ? fadedColor : (style.color || '#fff');
 	ctx.save();
 	ctx.beginPath();
 	ctx.rect(x, y, rect.width, rect.height);
@@ -299,12 +367,21 @@ function paintNode(ctx, el, ox, oy, clip) {
 
 	for (const child of el.children) paintNode(ctx, child, ox, oy, childClip);
 	ctx.restore();
+	if ((parseFloat(style.outlineWidth) || 0) > 0 && style.outlineStyle !== 'none') {
+		ctx.save();
+		if (Number.isFinite(opacity) && opacity < 1) ctx.globalAlpha *= opacity;
+		try { drawOutline(ctx, el, style, ox, oy); } catch { /* ignore */ }
+		ctx.restore();
+	}
 }
 
 /**
  * @param {Element} element
  * @param {HTMLCanvasElement} canvas
- * @param {{maxSize?: number}} [opts]
+ * @param {{maxSize?: number, pixelScale?: number, opaque?: boolean}} [opts]
+ *   pixelScale: canvas pixels per CSS pixel (default devicePixelRatio, max 2).
+ *   opaque: paint the root background fully opaque, so what is behind the
+ *   window in the world never changes the contrast of the menu.
  * @returns {{width: number, height: number, scale: number}}
  */
 export function paintElementToCanvas(element, canvas, opts = {}) {
@@ -312,7 +389,7 @@ export function paintElementToCanvas(element, canvas, opts = {}) {
 	const rect = element.getBoundingClientRect();
 	const width = Math.max(1, rect.width);
 	const height = Math.max(1, rect.height);
-	const dpr = Math.min(window.devicePixelRatio || 1, 2);
+	const dpr = opts.pixelScale || Math.min(window.devicePixelRatio || 1, 2);
 	const scale = Math.min(dpr, maxSize / Math.max(width, height));
 	const cw = Math.max(2, Math.round(width * scale));
 	const ch = Math.max(2, Math.round(height * scale));
@@ -323,6 +400,13 @@ export function paintElementToCanvas(element, canvas, opts = {}) {
 	const ctx = canvas.getContext('2d');
 	ctx.setTransform(scale, 0, 0, scale, 0, 0);
 	ctx.clearRect(0, 0, width, height);
+	if (opts.opaque) {
+		const st = getComputedStyle(element);
+		const m = String(st.backgroundColor).match(/rgba?\(([^)]+)\)/);
+		const p = m ? m[1].split(/[ ,/]+/).filter(Boolean).map(Number) : [22, 22, 32];
+		const radius = Math.min(parseFloat(st.borderTopLeftRadius) || 0, width / 2, height / 2);
+		fillBox(ctx, 0, 0, width, height, radius, `rgb(${p[0]}, ${p[1]}, ${p[2]})`);
+	}
 	paintNode(ctx, element, rect.left, rect.top, {
 		left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom
 	});

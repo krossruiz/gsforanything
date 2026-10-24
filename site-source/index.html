@@ -152,7 +152,7 @@
 		   no-WebXR link stay muted (three sets cursor:auto inline on those). */
 		#gs-dock #XRButton[data-xr-state="enter"],
 		#gs-dock #XRButton[data-xr-state="exit"] {
-			background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+			background: linear-gradient(135deg, #4f46e5, #6d28d9) !important;
 			border-color: rgba(255, 255, 255, 0.22) !important;
 		}
 		#gs-dock #XRButton[data-xr-state="unavailable"] { color: rgba(255, 255, 255, 0.62) !important; }
@@ -267,15 +267,20 @@
 			--dchat-bg: rgba(22, 22, 32, 0.85);
 			--dchat-border: #ffffff;
 			--dchat-text: #ffffff;
-			--dchat-text-muted: rgba(255, 255, 255, 0.55);
+			--dchat-text-muted: rgba(255, 255, 255, 0.72);
 			--dchat-header-bg: rgba(22, 22, 32, 0.85);
 			--dchat-tabs-bg: rgba(22, 22, 32, 0.85);
-			--dchat-tab-color: rgba(255, 255, 255, 0.5);
+			--dchat-tab-color: rgba(255, 255, 255, 0.86);
 			--dchat-tab-active-bg: #4f46e5;
 			--dchat-tab-active-color: #ffffff;
 			--dchat-input-bg: rgba(255, 255, 255, 0.1);
-			--dchat-accent: #8b5cf6;
-			--dchat-accent-2: #6366f1;
+			--dchat-accent: #6d28d9;
+			--dchat-accent-2: #4f46e5;
+			/* Boundaries for buttons, tabs and fields: >= 3:1 on the panel (WCAG 1.4.11). */
+			--dchat-control-border: #70738c;
+			--dchat-field-border: rgba(255, 255, 255, 0.5);
+			--dchat-selected-border: #c7d2fe;
+			--dchat-accent-border: #818cf8;
 			--dchat-radius: 18px;
 			--dchat-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 			container-type: inline-size;
@@ -310,22 +315,88 @@
 
 		#desktop-chat.hidden { display: none; }
 
-		/* While VR "HTML in canvas" is on, keep #desktop-chat laid out so the
-		   in-world mesh can snapshot the same element. It is parked off the
-		   WebGL view (immersive XR does not composite nodes outside the
-		   dom-overlay root; this also keeps cardboard/monitor from covering
-		   the canvas). !important beats the inline left/top/width from drag. */
-		#desktop-chat.html-in-canvas-source {
+		/* ---- VR windows (vrWindows.js) ----------------------------------
+		   In a headset every window is a live element painted into a texture.
+		   .html-in-canvas-source parks it off the WebGL view but keeps it laid
+		   out. All windows share the same CSS px -> metre scale, frame, hover
+		   ring and focus ring, so they read the same in-world. */
+		#gs-vr-keyboard, #gs-vr-hud { display: none; }
+		.html-in-canvas-source {
 			display: flex !important;
 			position: fixed !important;
 			left: 0 !important;
 			top: 0 !important;
 			right: auto !important;
+			bottom: auto !important;
 			transform: translateX(-12000px) !important;
 			visibility: visible !important;
 			pointer-events: none !important;
 			z-index: 0 !important;
 		}
+		/* Main menu: one fixed size in VR (not the desktop window size), so the
+		   in-world window is always 1.05 x 1.23 m with the same text size. */
+		#desktop-chat.html-in-canvas-source {
+			width: 600px !important;
+			height: 700px !important;
+			min-width: 0 !important;
+			max-width: none !important;
+			max-height: none !important;
+			opacity: 1 !important;
+		}
+		#gs-vr-keyboard, #gs-vr-hud {
+			box-sizing: border-box;
+			font-family: var(--dchat-font, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+			color: #fff;
+			background: rgb(22, 22, 32);
+			border: 1px solid #70738c;
+		}
+		#gs-vr-keyboard {
+			width: 600px;
+			flex-direction: column;
+			gap: 6px;
+			padding: 10px;
+			border-radius: 18px;
+		}
+		.gs-vr-kb-head { display: flex; align-items: center; gap: 8px; font-size: 13px; color: rgba(255, 255, 255, 0.72); min-height: 30px; }
+		.gs-vr-kb-head span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+		.gs-vr-kb-row { display: flex; gap: 6px; }
+		.gs-vr-key {
+			flex: 1 1 0;
+			min-width: 0;
+			height: 46px;
+			box-sizing: border-box;
+			border: 1px solid #70738c;
+			border-radius: 10px;
+			background: #2c2e3e;
+			color: #fff;
+			font: 600 18px/1 var(--dchat-font, -apple-system, BlinkMacSystemFont, sans-serif);
+			padding: 0;
+		}
+		.gs-vr-key.gs-vr-key-action { background: #4a4d66; font-size: 15px; }
+		.gs-vr-key.gs-vr-key-enter { background: linear-gradient(135deg, #4f46e5, #6d28d9); }
+		.gs-vr-key.active { background: #4f46e5; border-color: #c7d2fe; }
+		.gs-vr-kb-done { height: 30px; padding: 0 14px; font-size: 13px; }
+		#gs-vr-hud { padding: 0; border-radius: 22px; background: rgb(22, 22, 32); border: none; }
+		#gs-vr-hud-toggle {
+			width: 132px;
+			height: 44px;
+			box-sizing: border-box;
+			border-radius: 22px;
+			border: 1px solid #c7d2fe;
+			background: rgb(22, 22, 32);
+			color: #fff;
+			font: 700 17px/1 var(--dchat-font, -apple-system, BlinkMacSystemFont, sans-serif);
+		}
+		#gs-vr-hud-toggle[aria-pressed="true"] { background: #4f46e5; }
+		/* Controller-ray hover (set by vrWindows.js) and the typing target: the
+		   same 3px amber ring on every window, >= 3:1 on any panel surface. */
+		.gs-ray-hover { outline: 3px solid #facc15 !important; outline-offset: 1px !important; }
+		.gs-vr-typing { outline: 3px solid #38bdf8 !important; outline-offset: 1px !important; }
+		#desktop-chat :focus-visible { outline: 2px solid #facc15; outline-offset: 1px; }
+
+		/* Why parked off-screen: immersive XR does not composite nodes outside
+		   the dom-overlay root, and this keeps cardboard/monitor from covering
+		   the canvas. !important beats the inline left/top/width from drag. */
 		/* Resize edges and minimize aren't usable on the in-world mirror
 		   (minimize would display:none the source and blank the mesh). */
 		#desktop-chat.html-in-canvas-source .dchat-resize,
@@ -395,12 +466,12 @@
 		}
 
 		.dchat-tab {
-			border: none;
+			border: 1px solid var(--dchat-control-border, #70738c);
 			background: #3a3c4e;
 			color: var(--dchat-tab-color);
 			font-size: 12px;
 			font-weight: 600;
-			padding: 7px 8px;
+			padding: 6px 7px;
 			border-radius: 8px 8px 0 0;
 			cursor: pointer;
 			display: flex;
@@ -419,6 +490,8 @@
 		.dchat-tab.active {
 			background: var(--dchat-tab-active-bg);
 			color: var(--dchat-tab-active-color);
+			/* Selected state reads by outline as well as fill. */
+			border-color: var(--dchat-selected-border, #c7d2fe);
 		}
 
 		/* Environment / Dependencies show their short labels ("Env" / "Deps")
@@ -439,7 +512,7 @@
 				flex: 1 1 calc(20% - 4px);
 				min-width: calc(20% - 4px);
 				max-width: none;
-				padding: 8px 4px;
+				padding: 7px 3px;
 				font-size: 11px;
 				border-radius: 8px;
 				min-height: 36px;
@@ -450,7 +523,7 @@
 		@container desktop-chat (max-width: 340px) {
 			.dchat-tab {
 				font-size: 10px;
-				padding: 8px 2px;
+				padding: 7px 1px;
 				gap: 2px;
 				min-height: 36px;
 			}
@@ -470,7 +543,7 @@
 				flex: 1 1 calc(20% - 4px);
 				min-width: calc(20% - 4px);
 				max-width: none;
-				padding: 8px 4px;
+				padding: 7px 3px;
 				font-size: 11px;
 				border-radius: 8px;
 				min-height: 36px;
@@ -518,7 +591,7 @@
 			box-sizing: border-box;
 		}
 		#desktop-model-row label {
-			font-size: 12px; color: rgba(255, 255, 255, 0.55);
+			font-size: 12px; color: rgba(255, 255, 255, 0.72);
 			flex-shrink: 0;
 		}
 		#desktop-model-select {
@@ -528,7 +601,7 @@
 			width: 100%;
 			box-sizing: border-box;
 			background: rgba(255, 255, 255, 0.08); color: #fff;
-			border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px;
+			border: 1px solid var(--dchat-field-border, rgba(255, 255, 255, 0.5)); border-radius: 6px;
 			font-size: 12px; padding: 4px 6px;
 		}
 		#desktop-model-select option { background: #1f2030; color: #fff; }
@@ -543,7 +616,7 @@
 			box-sizing: border-box;
 		}
 		#desktop-ollama-model-row label {
-			font-size: 12px; color: rgba(255, 255, 255, 0.55);
+			font-size: 12px; color: rgba(255, 255, 255, 0.72);
 			flex-shrink: 0;
 		}
 		#desktop-ollama-model-select {
@@ -553,14 +626,14 @@
 			width: 100%;
 			box-sizing: border-box;
 			background: rgba(255, 255, 255, 0.08); color: #fff;
-			border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px;
+			border: 1px solid var(--dchat-field-border, rgba(255, 255, 255, 0.5)); border-radius: 6px;
 			font-size: 12px; padding: 4px 6px;
 		}
 		#desktop-ollama-model-select option { background: #1f2030; color: #fff; }
 
 		#dchat-nav-type {
 			background: rgba(255, 255, 255, 0.08); color: #fff;
-			border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px;
+			border: 1px solid var(--dchat-field-border, rgba(255, 255, 255, 0.5)); border-radius: 6px;
 			font-size: 13px; padding: 6px 8px;
 		}
 		#dchat-nav-type option { background: #1f2030; color: #fff; }
@@ -591,7 +664,8 @@
 		#desktop-chat-header-buttons button {
 			width: 24px;
 			height: 24px;
-			border: none;
+			box-sizing: border-box;
+			border: 1px solid var(--dchat-control-border, #70738c);
 			border-radius: 7px;
 			background: #3a3c4e;
 			color: #fff;
@@ -636,7 +710,7 @@
 
 		.dchat-msg.user {
 			align-self: flex-end;
-			background: linear-gradient(135deg, #6366f1, #8b5cf6);
+			background: linear-gradient(135deg, #4f46e5, #6d28d9);
 			color: #fff;
 			border-bottom-right-radius: 4px;
 		}
@@ -651,7 +725,7 @@
 		.dchat-msg.thinking {
 			align-self: flex-start;
 			font-style: italic;
-			color: rgba(255, 255, 255, 0.55);
+			color: rgba(255, 255, 255, 0.72);
 			background: none;
 			padding: 4px 4px;
 		}
@@ -670,7 +744,7 @@
 			font-size: 11px;
 			text-transform: uppercase;
 			letter-spacing: 0.6px;
-			color: rgba(255, 255, 255, 0.4);
+			color: rgba(255, 255, 255, 0.72);
 			font-weight: 700;
 		}
 
@@ -697,27 +771,30 @@
 			border: 1px solid rgba(255, 255, 255, 0.1);
 		}
 
-		#dchat-brightness {
+		/* The native colour dialog cannot open in a headset; hue/saturation/
+		   brightness sliders replace the old VR colour wheel. */
+		body.gs-xr-presenting #dchat-color-picker { display: none; }
+		#dchat-brightness, .dchat-env-range {
 			width: 100%;
-			accent-color: #8b5cf6;
+			accent-color: #7c3aed;
 		}
 
 		.dchat-disabled-note {
 			font-size: 12px;
-			color: rgba(255, 255, 255, 0.35);
+			color: rgba(255, 255, 255, 0.72);
 			font-style: italic;
 		}
 
 		#dchat-env-controls.disabled { opacity: 0.4; pointer-events: none; }
 
 		.dchat-btn {
-			border: none;
+			border: 1px solid var(--dchat-control-border, #70738c);
 			border-radius: 10px;
 			background: #3a3c4e;
 			color: #fff;
 			font-weight: 600;
 			font-size: 13px;
-			padding: 10px;
+			padding: 9px;
 			cursor: pointer;
 			transition: transform 0.1s, opacity 0.2s, background 0.15s;
 		}
@@ -725,7 +802,8 @@
 		.dchat-btn:hover { transform: scale(1.02); background: #4e5168; }
 		.dchat-btn:active { transform: scale(0.98); }
 		.dchat-btn.secondary { background: #3a3c4e; }
-		.dchat-btn.accent { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
+		.dchat-btn.accent { background: linear-gradient(135deg, #4f46e5, #6d28d9); border-color: var(--dchat-accent-border, #818cf8); }
+		.dchat-btn:disabled, .dchat-btn[disabled] { opacity: 0.5; cursor: default; }
 
 		/* --- Environment tab: 2D / 3D scene type (steers the AI + page) --- */
 		.dchat-seg {
@@ -733,17 +811,17 @@
 			grid-template-columns: repeat(2, 1fr);
 			gap: 6px;
 		}
-		.dchat-seg .dchat-btn { padding: 10px 6px; }
+		.dchat-seg .dchat-btn { padding: 9px 5px; }
 		.dchat-seg .dchat-btn.active {
-			background: linear-gradient(135deg, #6366f1, #8b5cf6);
-			box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25) inset;
+			background: linear-gradient(135deg, #4f46e5, #6d28d9);
+			border-color: var(--dchat-selected-border, #c7d2fe);
 		}
 		#dchat-dim-sub { margin-top: 6px; }
 		#dchat-dim-sub .dchat-btn { font-size: 12px; padding: 8px 6px; }
 		.dchat-env-note {
 			font-size: 12px;
 			line-height: 1.45;
-			color: rgba(255, 255, 255, 0.45);
+			color: rgba(255, 255, 255, 0.72);
 			margin-top: 8px;
 		}
 
@@ -775,7 +853,7 @@
 			gap: 8px;
 		}
 		.dchat-dep-name { font-weight: 700; }
-		.dchat-dep-version { font-size: 11px; color: rgba(255, 255, 255, 0.45); }
+		.dchat-dep-version { font-size: 11px; color: rgba(255, 255, 255, 0.72); }
 		.dchat-dep-toggle {
 			margin-left: auto;
 			display: flex;
@@ -786,14 +864,14 @@
 			cursor: pointer;
 			user-select: none;
 		}
-		.dchat-dep-toggle input { accent-color: #8b5cf6; }
-		.dchat-dep-desc { font-size: 12px; line-height: 1.4; color: rgba(255, 255, 255, 0.6); }
+		.dchat-dep-toggle input { accent-color: #7c3aed; }
+		.dchat-dep-desc { font-size: 12px; line-height: 1.4; color: rgba(255, 255, 255, 0.72); }
 		.dchat-dep-meta {
 			display: flex;
 			flex-wrap: wrap;
 			gap: 4px 10px;
 			font-size: 11px;
-			color: rgba(255, 255, 255, 0.4);
+			color: rgba(255, 255, 255, 0.72);
 		}
 		.dchat-dep-meta a { color: rgba(167, 139, 250, 0.9); text-decoration: none; word-break: break-all; }
 		.dchat-dep-meta a:hover { text-decoration: underline; }
@@ -817,27 +895,27 @@
 			grid-template-columns: repeat(3, 1fr);
 			gap: 6px;
 		}
-		#dchat-camera-mode .dchat-btn { padding: 10px 6px; }
+		#dchat-camera-mode .dchat-btn { padding: 9px 5px; }
 		#dchat-twin-sticks-opt { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: rgba(255, 255, 255, 0.8); cursor: pointer; }
-		#dchat-twin-sticks-opt input { width: 16px; height: 16px; margin: 0; accent-color: #8b5cf6; }
+		#dchat-twin-sticks-opt input { width: 16px; height: 16px; margin: 0; accent-color: #7c3aed; }
 		#dchat-window-anchor {
 			display: grid;
 			grid-template-columns: repeat(2, 1fr);
 			gap: 6px;
 		}
-		#dchat-window-anchor .dchat-btn { padding: 10px 6px; }
+		#dchat-window-anchor .dchat-btn { padding: 9px 5px; }
 		#dchat-window-anchor .dchat-btn.active {
-			background: linear-gradient(135deg, #6366f1, #8b5cf6);
-			box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25) inset;
+			background: linear-gradient(135deg, #4f46e5, #6d28d9);
+			border-color: var(--dchat-selected-border, #c7d2fe);
 		}
 		#dchat-camera-mode .dchat-btn.active {
-			background: linear-gradient(135deg, #6366f1, #8b5cf6);
-			box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25) inset;
+			background: linear-gradient(135deg, #4f46e5, #6d28d9);
+			border-color: var(--dchat-selected-border, #c7d2fe);
 		}
 		.dchat-controls-help {
 			font-size: 12px;
 			line-height: 1.45;
-			color: rgba(255, 255, 255, 0.6);
+			color: rgba(255, 255, 255, 0.72);
 		}
 		.dchat-controls-help kbd {
 			display: inline-block;
@@ -848,7 +926,7 @@
 			font: 600 11px/1.4 ui-monospace, Menlo, monospace;
 			text-align: center;
 		}
-		#dchat-controls-status { font-size: 11px; color: rgba(255, 255, 255, 0.4); }
+		#dchat-controls-status { font-size: 11px; color: rgba(255, 255, 255, 0.72); }
 		#dchat-gamepad-status.connected { color: #34d399; font-weight: 600; }
 		/* Gamepad connect / disconnect toast (created by main.js) */
 		#gs-gamepad-toast {
@@ -882,7 +960,7 @@
 		}
 		#dchat-files-hint {
 			font-size: 12px;
-			color: rgba(255,255,255,0.45);
+			color: rgba(255,255,255,0.72);
 			line-height: 1.4;
 			margin: 0 0 10px;
 		}
@@ -918,7 +996,7 @@
 			white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 		}
 		.dchat-file-item .sub {
-			font-size: 11px; color: rgba(255,255,255,0.45); margin-top: 2px;
+			font-size: 11px; color: rgba(255,255,255,0.72); margin-top: 2px;
 		}
 
 		#desktop-files-picker-button,
@@ -949,7 +1027,7 @@
 		}
 		#files-picker-inner h3 { margin: 0; padding: 14px 16px 8px; font-size: 16px; }
 		#files-picker-hint {
-			padding: 0 16px 10px; font-size: 12px; color: rgba(255,255,255,0.45); line-height: 1.35;
+			padding: 0 16px 10px; font-size: 12px; color: rgba(255,255,255,0.72); line-height: 1.35;
 		}
 		#files-picker-list {
 			flex: 1; overflow-y: auto; padding: 0 12px 8px;
@@ -970,7 +1048,7 @@
 			font-size: 13px; font-weight: 600;
 			white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 		}
-		.files-picker-row .label .sub { font-size: 11px; color: rgba(255,255,255,0.45); margin-top: 2px; }
+		.files-picker-row .label .sub { font-size: 11px; color: rgba(255,255,255,0.72); margin-top: 2px; }
 		#files-picker-actions {
 			display: flex; gap: 8px; justify-content: flex-end;
 			padding: 12px 16px 14px; border-top: 1px solid rgba(255,255,255,0.08);
@@ -981,7 +1059,7 @@
 		}
 		#files-picker-actions .btn-secondary { background: rgba(255,255,255,0.12); }
 		#files-picker-actions .btn-primary {
-			background: linear-gradient(135deg, #6366f1, #8b5cf6);
+			background: linear-gradient(135deg, #4f46e5, #6d28d9);
 		}
 
 
@@ -1075,7 +1153,7 @@
 
 		.dchat-scene-empty {
 			text-align: center;
-			color: rgba(255, 255, 255, 0.3);
+			color: rgba(255, 255, 255, 0.72);
 			font-size: 13px;
 			padding: 24px 0;
 		}
@@ -1128,7 +1206,7 @@
 		.dchat-scene-dates {
 			font-size: 11px;
 			line-height: 1.3;
-			color: rgba(255, 255, 255, 0.45);
+			color: rgba(255, 255, 255, 0.72);
 			overflow: hidden;
 			display: -webkit-box;
 			-webkit-line-clamp: 2;
@@ -1174,16 +1252,16 @@
 		#desktop-chat-input {
 			flex: 1;
 			min-width: 0;
-			padding: 10px 13px;
+			padding: 9px 12px;
 			font-size: 14px;
-			border: none;
+			border: 1px solid var(--dchat-field-border, rgba(255, 255, 255, 0.5));
 			border-radius: 11px;
 			background: var(--dchat-input-bg, rgba(255, 255, 255, 0.1));
 			color: #fff;
 			outline: none;
 		}
 
-		#desktop-chat-input::placeholder { color: rgba(255, 255, 255, 0.45); }
+		#desktop-chat-input::placeholder { color: rgba(255, 255, 255, 0.72); }
 		#desktop-chat-input:focus { background: rgba(255, 255, 255, 0.15); }
 
 		#desktop-mic-button, #desktop-send-button, #desktop-attach-button, #desktop-files-picker-button {
@@ -1254,7 +1332,9 @@
 		#desktop-mic-button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 		#desktop-send-button {
-			background: linear-gradient(135deg, #6366f1, #8b5cf6);
+			background: linear-gradient(135deg, #4f46e5, #6d28d9);
+			border: 1px solid var(--dchat-accent-border, #818cf8);
+			box-sizing: border-box;
 			font-weight: 600;
 		}
 
@@ -1317,7 +1397,7 @@
 		}
 
 		#chat-input::placeholder {
-			color: rgba(255, 255, 255, 0.5);
+			color: rgba(255, 255, 255, 0.72);
 		}
 
 		#chat-input:focus {
@@ -1329,7 +1409,7 @@
 			font-size: 16px;
 			border: none;
 			border-radius: 12px;
-			background: linear-gradient(135deg, #6366f1, #8b5cf6);
+			background: linear-gradient(135deg, #4f46e5, #6d28d9);
 			color: #fff;
 			cursor: pointer;
 			font-weight: 600;
@@ -1485,7 +1565,7 @@
 		}
 
 		#export-confirm-btn {
-			background: linear-gradient(135deg, #6366f1, #8b5cf6);
+			background: linear-gradient(135deg, #4f46e5, #6d28d9);
 			color: #fff;
 		}
 
@@ -1591,7 +1671,7 @@
 		}
 		.share-rename-buttons .btn-secondary { background: rgba(255,255,255,0.12); }
 		.share-rename-buttons .btn-primary {
-			background: linear-gradient(135deg, #6366f1, #8b5cf6);
+			background: linear-gradient(135deg, #4f46e5, #6d28d9);
 		}
 
 		/* GS version control: the button lives in #gs-dock (styles above). */
@@ -1703,9 +1783,9 @@
 			transform: scale(1.03);
 		}
 		.dchat-scene-actions .dchat-btn.accent {
-			background: linear-gradient(135deg, var(--dchat-accent-2, #6366f1), var(--dchat-accent, #8b5cf6));
+			background: linear-gradient(135deg, var(--dchat-accent-2, #4f46e5), var(--dchat-accent, #6d28d9));
 			color: #fff;
-			border-color: transparent;
+			border-color: var(--dchat-selected-border, #c7d2fe);
 		}
 		/* Community scene entries: name (+ dates) on one row, actions on the next.
 		   Scoped so Scenes and Community Themes keep the single-row item layout. */
@@ -1750,9 +1830,9 @@
 		}
 		.dchat-subtab:hover { color: #fff; background: #4e5168; }
 		.dchat-subtab.active {
-			background: linear-gradient(135deg, var(--dchat-accent-2, #6366f1), var(--dchat-accent, #8b5cf6));
+			background: linear-gradient(135deg, var(--dchat-accent-2, #4f46e5), var(--dchat-accent, #6d28d9));
 			color: #fff;
-			border-color: transparent;
+			border-color: var(--dchat-selected-border, #c7d2fe);
 		}
 		.dchat-community-section,
 		.dchat-chat-section { display: none; flex-direction: column; flex: 1; min-height: 0; }
@@ -1808,7 +1888,7 @@
 		}
 		.dchat-theme-msg.system {
 			align-self: stretch;
-			color: rgba(255,255,255,0.45);
+			color: rgba(255,255,255,0.72);
 			font-style: italic;
 			background: none;
 			padding: 2px 0;
@@ -1821,22 +1901,22 @@
 		#dchat-theme-chat-input {
 			flex: 1;
 			background: var(--dchat-input-bg, rgba(255,255,255,0.1));
-			border: 1px solid rgba(255,255,255,0.12);
+			border: 1px solid var(--dchat-field-border, rgba(255,255,255,0.5));
 			border-radius: 8px;
 			color: var(--dchat-text, #fff);
 			font-size: 12px;
 			padding: 7px 9px;
 			outline: none;
 		}
-		#dchat-theme-chat-input::placeholder { color: rgba(255,255,255,0.4); }
+		#dchat-theme-chat-input::placeholder { color: rgba(255,255,255,0.72); }
 		#dchat-theme-chat-send {
-			border: none;
+			border: 1px solid var(--dchat-accent-border, #818cf8);
 			border-radius: 8px;
-			padding: 7px 12px;
+			padding: 6px 11px;
 			font-weight: 700;
 			font-size: 12px;
 			cursor: pointer;
-			background: linear-gradient(135deg, var(--dchat-accent-2, #6366f1), var(--dchat-accent, #8b5cf6));
+			background: linear-gradient(135deg, var(--dchat-accent-2, #4f46e5), var(--dchat-accent, #6d28d9));
 			color: #fff;
 		}
 		#dchat-theme-chat-send:disabled { opacity: 0.5; cursor: default; }
@@ -1855,7 +1935,7 @@
 			width: 16px;
 			height: 16px;
 			margin: 0;
-			accent-color: var(--dchat-accent-2, #6366f1);
+			accent-color: var(--dchat-accent-2, #4f46e5);
 			cursor: pointer;
 		}
 
@@ -1914,7 +1994,7 @@
 		}
 		#dchat-code-status {
 			font-size: 11px;
-			color: rgba(255, 255, 255, 0.45);
+			color: rgba(255, 255, 255, 0.72);
 			flex: 1;
 			min-width: 80px;
 			text-align: right;
@@ -1924,7 +2004,7 @@
 		#dchat-code-status.pending { color: #a5b4fc; }
 		#dchat-code-hint {
 			font-size: 11px;
-			color: rgba(255, 255, 255, 0.35);
+			color: rgba(255, 255, 255, 0.72);
 			flex-shrink: 0;
 			line-height: 1.35;
 		}
@@ -1933,7 +2013,7 @@
 			flex: 1;
 			min-height: 0;
 			width: 100%;
-			border: 1px solid rgba(255, 255, 255, 0.1);
+			border: 1px solid var(--dchat-field-border, rgba(255, 255, 255, 0.5));
 			border-radius: 10px;
 			background: rgba(0, 0, 0, 0.35);
 			overflow: hidden;
@@ -1994,8 +2074,8 @@
 			overflow: auto;
 		}
 		#dchat-code-editor::placeholder {
-			color: rgba(255, 255, 255, 0.35);
-			-webkit-text-fill-color: rgba(255, 255, 255, 0.35);
+			color: rgba(255, 255, 255, 0.72);
+			-webkit-text-fill-color: rgba(255, 255, 255, 0.72);
 		}
 		#dchat-code-editor::selection {
 			background: rgba(99, 102, 241, 0.45);
@@ -2107,7 +2187,7 @@
 			min-width: 0;
 			max-width: none;
 			min-height: 44px;
-			padding: 0 14px;
+			padding: 0 13px; /* 1px border: same box as 0.978 */
 			font-size: 13px;
 			border-radius: 10px;
 			scroll-snap-align: start;
@@ -2228,6 +2308,9 @@
 	<div id="overlay-root">
 		<div id="status" hidden></div>
 		<button id="ui-toggle">Hide UI</button>
+		<!-- VR-only windows (vrWindows.js): parked off-screen and painted into the headset. -->
+		<div id="gs-vr-hud" aria-hidden="true"><button id="gs-vr-hud-toggle" type="button" aria-pressed="false">Hide UI</button></div>
+		<div id="gs-vr-keyboard" aria-hidden="true"></div>
 
 		<!-- Scene file input (hidden). Note: "*" is not a valid accept value and
 		     made Chrome's file picker filter out everything, appearing to show
@@ -2247,7 +2330,7 @@
 				<label>Screenshot</label>
 				<div id="export-preview-area">
 					<div id="export-preview">
-						<span style="color:rgba(255,255,255,0.4);font-size:12px;text-align:center">No screenshot</span>
+						<span style="color:rgba(255,255,255,0.72);font-size:12px;text-align:center">No screenshot</span>
 					</div>
 					<button id="export-screenshot-btn">📸 Capture</button>
 				</div>
@@ -2410,14 +2493,22 @@
 						<div id="dchat-color-preview"></div>
 					</div>
 					<div style="margin-top:12px">
+						<div class="dchat-section-label" style="margin-bottom:8px">Hue</div>
+						<input type="range" id="dchat-hue" class="dchat-env-range" min="0" max="360" value="220" />
+					</div>
+					<div style="margin-top:12px">
+						<div class="dchat-section-label" style="margin-bottom:8px">Saturation</div>
+						<input type="range" id="dchat-saturation" class="dchat-env-range" min="0" max="100" value="15" />
+					</div>
+					<div style="margin-top:12px">
 						<div class="dchat-section-label" style="margin-bottom:8px">Brightness</div>
-						<input type="range" id="dchat-brightness" min="2" max="95" value="50" />
+						<input type="range" id="dchat-brightness" class="dchat-env-range" min="2" max="95" value="50" />
 					</div>
 					<div class="dchat-disabled-note" style="margin-top:8px;display:none">Background color is unavailable while AR/VR mode is active.</div>
 				</div>
 				<div id="dchat-hdri">
 					<div class="dchat-section-label" style="margin-bottom:8px">360 / HDRI Environment</div>
-					<div style="font-size:12px;color:rgba(255,255,255,0.45);margin-bottom:8px">
+					<div style="font-size:12px;color:rgba(255,255,255,0.72);margin-bottom:8px">
 						Equirectangular image for lighting and optional background (.hdr, .exr, .jpg, .png).
 					</div>
 					<input type="file" id="dchat-hdri-file" accept=".hdr,.exr,.jpg,.jpeg,.png,.webp,image/*,application/octet-stream" hidden />
@@ -2426,14 +2517,14 @@
 						<button type="button" id="dchat-hdri-clear" class="dchat-btn secondary">Clear</button>
 					</div>
 					<div style="display:flex;gap:8px;margin-bottom:8px">
-						<input type="url" id="dchat-hdri-url" placeholder="https://…/env.hdr" autocomplete="off" style="flex:1;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:var(--dchat-input-bg);color:var(--dchat-text);font-size:12px" />
+						<input type="url" id="dchat-hdri-url" placeholder="https://…/env.hdr" autocomplete="off" style="flex:1;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid var(--dchat-field-border, rgba(255,255,255,0.5));background:var(--dchat-input-bg);color:var(--dchat-text);font-size:12px" />
 						<button type="button" id="dchat-hdri-url-load" class="dchat-btn secondary">Load URL</button>
 					</div>
 					<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:rgba(255,255,255,0.7);cursor:pointer;user-select:none;margin-bottom:6px">
 						<input type="checkbox" id="dchat-hdri-bg" checked />
 						Use as background (off = lighting only)
 					</label>
-					<div id="dchat-hdri-status" style="font-size:11px;color:rgba(255,255,255,0.4)"></div>
+					<div id="dchat-hdri-status" style="font-size:11px;color:rgba(255,255,255,0.72)"></div>
 				</div>
 				<div>
 					<div class="dchat-section-label" style="margin-bottom:8px">Navigation</div>
@@ -2441,14 +2532,14 @@
 						<option value="free">WASD (fly toward where you're looking)</option>
 						<option value="planar">First Person (ground-locked, Q/E sets height)</option>
 					</select>
-					<div style="font-size:12px;color:rgba(255,255,255,0.45);margin-bottom:8px">
+					<div style="font-size:12px;color:rgba(255,255,255,0.72);margin-bottom:8px">
 						W/A/S/D move &middot; Q/E up/down &middot; on Quest: left stick moves,
 						right stick turns/up-down &middot; right grip cycles modes (incl. off).
 					</div>
 				</div>
 				<div>
 					<div class="dchat-section-label" style="margin-bottom:8px">Camera</div>
-					<div style="font-size:12px;color:rgba(255,255,255,0.45);margin-bottom:8px">
+					<div style="font-size:12px;color:rgba(255,255,255,0.72);margin-bottom:8px">
 						Pick a camera mode (Orbit, Map, Trackball, Fly, First person or Off) in the Controls tab.
 						Reset returns to the start view (4 m back at eye height; Orbit circles the scene origin).
 					</div>
@@ -2520,7 +2611,7 @@
 						Remember theme
 					</label>
 					<div id="dchat-themes-list"></div>
-					<div style="font-size:12px;color:rgba(255,255,255,0.45);margin-top:10px;line-height:1.4">
+					<div style="font-size:12px;color:rgba(255,255,255,0.72);margin-top:10px;line-height:1.4">
 						Restyle the editor in Chat → Theme, then upload the current theme here to share it.
 					</div>
 				</div>
@@ -2579,7 +2670,7 @@
 				<div class="dchat-controls-help" data-camera-help="off" hidden>
 					Camera input is off. The camera stays where it is until you pick another mode.
 				</div>
-				<div class="dchat-controls-help" data-camera-help="orbit map trackball fly firstperson" style="color:rgba(255,255,255,0.4)">
+				<div class="dchat-controls-help" data-camera-help="orbit map trackball fly firstperson" style="color:rgba(255,255,255,0.72)">
 					Keys work unless you are typing in a text field. Reset Camera View (Env tab) returns to the default view.
 				</div>
 				<div id="dchat-controls-status"></div>
@@ -2610,7 +2701,7 @@
 						(<b>Windows: Fixed / Follow head</b>).
 					</div>
 				</div>
-				<div class="dchat-controls-help" style="color:rgba(255,255,255,0.4)">
+				<div class="dchat-controls-help" style="color:rgba(255,255,255,0.72)">
 					Desktop and phone only. In a headset, the thumbsticks still move you (see Environment &rarr; Navigation).
 				</div>
 			</div>
@@ -2624,7 +2715,7 @@
 					and scene code can load any of them on demand with <code>await gsRequire('name')</code>.
 				</div>
 				<div id="dchat-deps-list"></div>
-				<div id="dchat-deps-note" class="dchat-controls-help" style="color:rgba(255,255,255,0.4)"></div>
+				<div id="dchat-deps-note" class="dchat-controls-help" style="color:rgba(255,255,255,0.72)"></div>
 			</div>
 		</div>
 
